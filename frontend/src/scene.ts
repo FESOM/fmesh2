@@ -67,6 +67,7 @@ export function startViewer(input: ViewerInput): void {
   let downX = 0;
   let downY = 0;
   renderer.domElement.addEventListener('pointermove', (e) => {
+    if (e.buttons !== 0) return; // don't hover-pick mid-drag
     pointerX = e.clientX;
     pointerY = e.clientY;
     pointerMoved = true;

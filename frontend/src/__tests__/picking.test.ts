@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeLon, nodeHtml } from '../inspect';
-import { decodeId, encodeId, PICK_NONE } from '../picking';
+import { decodeId, encodeId, nearestIdInWindow, PICK_NONE } from '../picking';
 
 describe('picking id codec', () => {
   it('roundtrips across the full range', () => {
@@ -14,6 +14,32 @@ describe('picking id codec', () => {
 
   it('cleared black pixel decodes to PICK_NONE', () => {
     expect(decodeId(0, 0, 0)).toBe(PICK_NONE);
+  });
+});
+
+describe('nearestIdInWindow', () => {
+  const w = 5;
+  const put = (px: Uint8Array, x: number, y: number, id: number) => {
+    const [r, g, b] = encodeId(id);
+    px.set([r, g, b, 255], (y * w + x) * 4);
+  };
+
+  it('returns the id closest to the window center', () => {
+    const px = new Uint8Array(w * w * 4);
+    put(px, 0, 0, 7); // corner, far from center (2,2)
+    put(px, 3, 2, 42); // one pixel from center
+    expect(nearestIdInWindow(px, w)).toBe(42);
+  });
+
+  it('an id at the exact center beats everything', () => {
+    const px = new Uint8Array(w * w * 4);
+    put(px, 3, 2, 42);
+    put(px, 2, 2, 9);
+    expect(nearestIdInWindow(px, w)).toBe(9);
+  });
+
+  it('empty window returns PICK_NONE', () => {
+    expect(nearestIdInWindow(new Uint8Array(w * w * 4), w)).toBe(PICK_NONE);
   });
 });
 

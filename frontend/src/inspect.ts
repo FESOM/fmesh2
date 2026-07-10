@@ -48,20 +48,27 @@ export class Inspector {
     this.markerPos2 = new THREE.BufferAttribute(new Float32Array(3), 3);
     geo.setAttribute('position', this.markerPos);
     geo.setAttribute('position2', this.markerPos2);
+    this.markerUniforms = { uMorph, uPinned: { value: 0 } };
     this.marker = new THREE.Points(
       geo,
       new THREE.ShaderMaterial({
-        uniforms: { uMorph },
+        uniforms: this.markerUniforms,
         vertexShader: /* glsl */ `
-          attribute vec3 position2; uniform float uMorph;
+          attribute vec3 position2; uniform float uMorph; uniform float uPinned;
           void main() {
-            gl_PointSize = 11.0;
+            gl_PointSize = mix(11.0, 16.0, uPinned);
             gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, position2, uMorph), 1.0);
           }`,
         fragmentShader: /* glsl */ `
+          uniform float uPinned;
           void main() {
-            if (length(gl_PointCoord - 0.5) > 0.5) discard;
-            gl_FragColor = vec4(1.0, 0.55, 0.15, 1.0);
+            float r = length(gl_PointCoord - 0.5);
+            if (r > 0.5) discard;
+            vec3 hover = vec3(1.0, 0.55, 0.15);
+            vec3 pinned = vec3(0.35, 0.85, 1.0);
+            // pinned marker renders as a ring, hover as a dot
+            if (uPinned > 0.5 && r < 0.28) discard;
+            gl_FragColor = vec4(mix(hover, pinned, uPinned), 1.0);
           }`,
         transparent: true,
         depthTest: false,
@@ -70,6 +77,13 @@ export class Inspector {
     this.marker.renderOrder = 5;
     this.marker.visible = false;
     this.marker.frustumCulled = false;
+  }
+
+  private markerUniforms!: { uMorph: { value: number }; uPinned: { value: number } };
+
+  private setPinnedVisuals(on: boolean): void {
+    this.markerUniforms.uPinned.value = on ? 1 : 0;
+    this.panel.style.borderColor = on ? '#5a9bff' : '#2a3142';
   }
 
   private moveMarker(idx: number): void {
@@ -107,21 +121,26 @@ export class Inspector {
   async pin(idx: number): Promise<void> {
     if (idx < 0) {
       this.pinned = false;
+      this.setPinnedVisuals(false);
       this.hover(-1);
       return;
     }
     this.pinned = true;
+    this.setPinnedVisuals(true);
     this.moveMarker(idx);
     const { lon, lat, res, dep } = this.info(idx);
-    this.panel.innerHTML = nodeHtml(idx, lon, lat, res, dep, '<br><span class="dim">…</span>');
+    const head = '<span style="color:#59d9ff">📌 pinned</span><br>';
+    this.panel.innerHTML = head + nodeHtml(idx, lon, lat, res, dep, '<br><span class="dim">…</span>');
     this.panel.style.display = 'block';
     try {
       const info = await fetchJson<NodeInfo>(`/api/mesh/${this.meshId}/node/${idx}`);
-      this.panel.innerHTML = nodeHtml(
-        idx, info.lon, info.lat, info.res_km, info.depth_m,
-        `<br>${info.neighbors.length} neighbors` +
-          `<br><span class="dim">click elsewhere to unpin</span>`,
-      );
+      this.panel.innerHTML =
+        head +
+        nodeHtml(
+          idx, info.lon, info.lat, info.res_km, info.depth_m,
+          `<br>${info.neighbors.length} neighbors` +
+            `<br><span class="dim">click empty space to unpin</span>`,
+        );
     } catch {
       /* keep local info */
     }

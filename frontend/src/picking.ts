@@ -12,6 +12,33 @@ export function decodeId(r: number, g: number, b: number): number {
 
 export const PICK_NONE = -1;
 
+/** Side of the square pick window read around the cursor, in device px. */
+export const PICK_WINDOW = 33;
+
+/**
+ * Scan an RGBA pick-window readback for the id nearest to the window center.
+ * Solves the sparse-node problem: when zoomed in, nodes are hundreds of px
+ * apart, so "the exact pixel under the cursor" almost never hits one.
+ */
+export function nearestIdInWindow(pixels: Uint8Array, w: number): number {
+  const c = (w - 1) / 2;
+  let best = PICK_NONE;
+  let bestD2 = Infinity;
+  for (let y = 0; y < w; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      const id = decodeId(pixels[o], pixels[o + 1], pixels[o + 2]);
+      if (id === PICK_NONE) continue;
+      const d2 = (x - c) * (x - c) + (y - c) * (y - c);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = id;
+      }
+    }
+  }
+  return best;
+}
+
 const PICK_VERT = /* glsl */ `
   attribute vec3 position2; attribute float vid;
   uniform float uMorph;
@@ -33,11 +60,11 @@ const PICK_FRAG = /* glsl */ `
       1.0);
   }`;
 
-/** Offscreen 1x1 ID render pass: O(1) node hit-testing at any mesh size. */
+/** Offscreen ID render pass: O(1) node hit-testing at any mesh size. */
 export class PickingPass {
   readonly scene = new THREE.Scene();
-  private readonly target = new THREE.WebGLRenderTarget(1, 1);
-  private readonly pixel = new Uint8Array(4);
+  private readonly target = new THREE.WebGLRenderTarget(PICK_WINDOW, PICK_WINDOW);
+  private readonly pixels = new Uint8Array(PICK_WINDOW * PICK_WINDOW * 4);
   private readonly occluder: THREE.Mesh;
 
   constructor(
@@ -71,18 +98,27 @@ export class PickingPass {
     this.scene.add(this.occluder, pts);
   }
 
-  /** Pick at CSS pixel (x, y); returns vertex id or PICK_NONE. */
+  /** Pick near CSS pixel (x, y): nearest node id in the window, or PICK_NONE. */
   pick(renderer: THREE.WebGLRenderer, camera: THREE.PerspectiveCamera, x: number, y: number): number {
     this.occluder.visible = this.uMorph.value < 0.25;
     const dpr = renderer.getPixelRatio();
     const size = renderer.getSize(new THREE.Vector2());
-    camera.setViewOffset(size.x * dpr, size.y * dpr, x * dpr, y * dpr, 1, 1);
+    camera.setViewOffset(
+      size.x * dpr,
+      size.y * dpr,
+      Math.round(x * dpr - PICK_WINDOW / 2),
+      Math.round(y * dpr - PICK_WINDOW / 2),
+      PICK_WINDOW,
+      PICK_WINDOW,
+    );
     const prevTarget = renderer.getRenderTarget();
     renderer.setRenderTarget(this.target);
     renderer.render(this.scene, camera);
     renderer.setRenderTarget(prevTarget);
     camera.clearViewOffset();
-    renderer.readRenderTargetPixels(this.target, 0, 0, 1, 1, this.pixel);
-    return decodeId(this.pixel[0], this.pixel[1], this.pixel[2]);
+    renderer.readRenderTargetPixels(
+      this.target, 0, 0, PICK_WINDOW, PICK_WINDOW, this.pixels,
+    );
+    return nearestIdInWindow(this.pixels, PICK_WINDOW);
   }
 }
