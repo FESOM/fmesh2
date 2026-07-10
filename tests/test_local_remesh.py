@@ -221,13 +221,15 @@ def test_refine_coastal_with_topo(core2, tmp_path):
 def test_unreachable_target_is_reported(core2, refined, tmp_path):
     """A target far below what the seam band allows must be flagged.
 
-    Small strait-sized polygon (Gibraltar) + 1 km target on a ~50 km mesh:
-    the frozen-seam transition band (~3x seam edge) fills the cavity, so
-    the sizing never approaches the target — the report must say so
-    instead of silently delivering ~the old resolution.
+    Small open-ocean polygon (all-seam ring — coast edges carry no band
+    since they are subdividable) + 1 km target on a ~110 km mesh: the
+    frozen-seam transition band (~3x seam edge) fills the cavity, so the
+    sizing never approaches the target — the report must say so instead
+    of silently delivering ~the old resolution.
     """
-    strait = [(-6.6, 35.4), (-4.6, 35.4), (-4.6, 36.6), (-6.6, 36.6)]
-    cav = extract_cavity(core2, strait)
+    tight = [(-35.8, 29.2), (-34.2, 29.2), (-34.2, 30.8), (-35.8, 30.8)]
+    cav = extract_cavity(core2, tight)
+    assert not cav.edge_is_coast.any()  # fully band-limited ring
     res = remesh_cavity(core2, cav, 1.0, cache_dir=tmp_path)
     rep = res.report
     assert rep["target_reached"] is False
@@ -254,3 +256,65 @@ def test_single_node_delete_via_star_remesh(core2, tmp_path):
     assert res.mapping[n] == -1  # the node is gone
     assert res.report["watertight_seam"]
     assert res.mesh.n_nodes == core2.n_nodes - 1 + res.report["n_new_interior_nodes"]
+
+
+GIBRALTAR = [(-8.0, 34.5), (-3.0, 34.5), (-3.0, 37.5), (-8.0, 37.5)]
+
+
+def _strait_stats(m):
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    s = (m.lon > -6.2) & (m.lon < -4.8) & (m.lat > 35.6) & (m.lat < 36.4)
+    e = np.concatenate([m.tri[:, [0, 1]], m.tri[:, [1, 2]], m.tri[:, [2, 0]]])
+    g = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(m.n_nodes, m.n_nodes))
+    res = local_resolution_km(m)
+    return float(np.median(res[s])), connected_components(g, directed=False)[0]
+
+
+def test_strait_refines_along_frozen_shoreline(core2, tmp_path):
+    """Coast segments carry no seam band: a coast-bound strait CAN refine.
+
+    Without topo the shoreline SHAPE is preserved exactly — jigsaw only
+    subdivides the frozen coast polyline — and Gibraltar (1-2 elements
+    wide in core2) actually reaches ~the target instead of staying pinned
+    to the old coastline spacing.
+    """
+    import shapely
+
+    from fmesh2.core.projection import stereo_xy
+    from fmesh2.core.topology import boundary_edges
+
+    cav = extract_cavity(core2, GIBRALTAR)
+    res = remesh_cavity(core2, cav, 12.0, cache_dir=tmp_path)
+    assert res.report["watertight_seam"]
+    med, n_comp = _strait_stats(res.mesh)
+    assert n_comp == 1  # the strait stays open
+    assert med < 25.0  # was pinned at ~50 km before the coast exemption
+
+    # every new boundary vertex lies ON the old coast polyline (bit-frozen shape)
+    coast_lines = shapely.multilinestrings(
+        [cav.ring_xy[e] for e in cav.ring_edges[cav.edge_is_coast]]
+    )
+    n_kept = int((res.mapping >= 0).sum())
+    be = boundary_edges(res.mesh.tri, res.mesh.n_nodes)
+    new_bnodes = np.unique(be[be >= n_kept])
+    assert new_bnodes.size > 0  # the coastline did get subdivided
+    x, y = stereo_xy(
+        res.mesh.lon[new_bnodes], res.mesh.lat[new_bnodes], cav.lon0, cav.lat0
+    )
+    d = shapely.distance(shapely.points(np.column_stack([x, y])), coast_lines)
+    assert d.max() < 1e-9  # km
+
+
+@needs_rtopo
+def test_strait_carved_open_with_topo(core2, tmp_path):
+    """RTopo land cut at a target finer than the real strait keeps it open."""
+    from fmesh2.data.topo import Topo
+
+    cav = extract_cavity(core2, GIBRALTAR)
+    res = remesh_cavity(core2, cav, 5.0, topo=Topo(RTOPO), cache_dir=tmp_path)
+    assert res.report["watertight_seam"]
+    med, n_comp = _strait_stats(res.mesh)
+    assert n_comp == 1  # Atlantic and Mediterranean stay connected
+    assert med < 12.0  # real ~14 km channel resolved by ~5-8 km elements

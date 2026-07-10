@@ -12,7 +12,9 @@ Task 20 gate parameters (`docs/notes/cavity-spike.md`):
   applies its relative-mode default and refines without bound);
 * hfun ramps from `RING_HEADROOM x` the local seam-edge length at the ring
   to the target over a per-segment band of `BAND_FACTOR x` that edge's
-  length (narrower bands make jigsaw split the longest frozen edges).
+  length (narrower bands make jigsaw split the longest frozen edges) —
+  SEAM segments only: coast segments border land, nothing stitches to
+  them, so jigsaw may subdivide the coast polyline to meet the target.
 
 Reproducibility follows the M2 contract: the raw jigsaw cavity is cached
 (npz keyed by the exact inputs) and everything around it is pure numpy, so
@@ -66,22 +68,35 @@ class RemeshResult:
 def seam_hfun_at(points_xy, cavity: Cavity, target, transition_km: float | None = None):
     """The seam-protecting ramp evaluated at plane points (km).
 
-    `target` is a scalar or a per-point array. The band is per ring segment:
+    `target` is a scalar or a per-point array. The band is per SEAM segment:
     `max(BAND_FACTOR * segment_length, transition_km)`.
+
+    Only seam segments (shared with the outside mesh) are protected — those
+    edges must survive jigsaw untouched for the stitch. Coast segments are
+    exempt: land borders nothing to stitch to, so jigsaw is free to
+    subdivide the frozen coast polyline (identical shoreline, more
+    vertices). Without this exemption, coast-bound regions — straits,
+    shelves — could never be refined below ~the old coastline spacing.
+    Returns (h, distance to the nearest seam segment; inf when the ring is
+    all coast, e.g. a fully enclosed sea).
     """
     points_xy = np.asarray(points_xy, dtype=np.float64)
-    segs = shapely.linestrings(cavity.ring_xy[cavity.ring_edges])
+    target = np.broadcast_to(
+        np.asarray(target, dtype=np.float64), (len(points_xy),)
+    )
+    seam = ~cavity.edge_is_coast
+    if not seam.any():
+        return target.copy(), np.full(len(points_xy), np.inf)
+    seam_len = cavity.edge_len_km[seam]
+    segs = shapely.linestrings(cavity.ring_xy[cavity.ring_edges[seam]])
     pgeo = shapely.points(points_xy)
     inp, near = shapely.STRtree(segs).query_nearest(pgeo, all_matches=False)
     d = np.empty(len(points_xy))
     hseam = np.empty(len(points_xy))
     band = np.empty(len(points_xy))
     d[inp] = shapely.distance(pgeo[inp], segs[near])
-    hseam[inp] = RING_HEADROOM * cavity.edge_len_km[near]
-    band[inp] = np.maximum(
-        BAND_FACTOR * cavity.edge_len_km[near], transition_km or 0.0
-    )
-    target = np.broadcast_to(np.asarray(target, dtype=np.float64), (len(points_xy),))
+    hseam[inp] = RING_HEADROOM * seam_len[near]
+    band[inp] = np.maximum(BAND_FACTOR * seam_len[near], transition_km or 0.0)
     return target + (hseam - target) * np.clip(1.0 - d / band, 0.0, 1.0), d
 
 

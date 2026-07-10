@@ -32,6 +32,7 @@ export class RefineMode {
   private readonly abLine: HTMLElement;
   private readonly targetInput: HTMLInputElement;
   private readonly transInput: HTMLInputElement;
+  private readonly topoInput: HTMLInputElement;
   private polling: number | undefined;
   private pollBusy = false; // interval ticks can overlap their async work
   private settled = false;
@@ -46,6 +47,8 @@ export class RefineMode {
       <div id="refform">
         <label>target km <input id="refTarget" type="number" step="any" value="25"></label>
         <label>transition km <input id="refTrans" type="number" step="any" placeholder="auto"></label>
+        <label style="grid-column:1 / -1">topo .nc — optional, re-cuts the coastline
+          <input id="refTopo" type="text" placeholder="/path/to/RTopo.nc"></label>
       </div>
       <div id="refStatus" class="dim">draw a polygon on the mesh to refine it</div>
       <div id="refAB"></div>`;
@@ -54,6 +57,11 @@ export class RefineMode {
     this.abLine = panel.querySelector('#refAB')!;
     this.targetInput = panel.querySelector('#refTarget')!;
     this.transInput = panel.querySelector('#refTrans')!;
+    this.topoInput = panel.querySelector('#refTopo')!;
+    this.topoInput.value = localStorage.getItem('fmesh2.refine.topo') ?? '';
+    this.topoInput.addEventListener('change', () => {
+      localStorage.setItem('fmesh2.refine.topo', this.topoInput.value.trim());
+    });
     panel.querySelector('#bRefineDraw')!.addEventListener('click', () => this.toggle());
 
     this.draw = new DrawMode({
@@ -124,6 +132,7 @@ export class RefineMode {
         polygon: ring.map((v) => [v.lon, v.lat]),
         target_km: target,
         transition_km: Number.isFinite(trans) && trans > 0 ? trans : null,
+        topo: this.topoInput.value.trim() || null,
       }));
     } catch (err) {
       this.status.textContent = String(err);

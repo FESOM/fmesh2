@@ -88,16 +88,27 @@ refine polygon around the node(s) — a polygon smaller than an element
 automatically selects the enclosed nodes' surrounding elements — and
 remesh at (or coarser than) the local resolution. The enclosed nodes are
 interior to the cavity, so they are removed and the patch is rebuilt at
-jigsaw quality; `mapping.csv` lists the deleted ids as `-1`.
+jigsaw quality; `mapping.csv` lists the deleted ids as `-1`. Caveat:
+nodes ON the coastline are ring vertices and survive; providing a topo
+file lets the land cut replace them where the data disagrees.
 
-**Deep refinements are iterative.** The boundary of a refined region stays
-bit-frozen, so the resolution must transition from the surrounding mesh to
-your target over a band of ~3× the local edge length. Inside a polygon
-small relative to that band a very fine target is unreachable — the panel
-warns and reports the finest reachable size. To go e.g. 100 km → 1 km,
-either draw a region much larger than the transition band, or refine in
-steps (100 → 30 → 10 → 3 → 1 km): each pass makes the seam finer, which
-shrinks the next pass's band.
+**Coastlines don't limit refinement.** Only the seam (the open-water
+boundary shared with the outside mesh) is transition-protected; coastline
+segments inside the region are freely subdivided. Without a topo file the
+shoreline *shape* is preserved exactly (new vertices lie on the old
+polyline); with `topo` the land cut re-resolves the coastline from data.
+Coast-bound regions — straits, shelves — refine like open water. One
+physical caveat: with topo, the target must be finer than the real channel
+width (Gibraltar ≈ 14 km) or the land cut closes the strait — coarse
+meshes only keep such straits open by artificially widening them.
+
+**Deep refinements in open water are iterative.** The seam must transition
+from the surrounding mesh to your target over a band of ~3× the local
+edge length. Inside a polygon small relative to that band a very fine
+target is unreachable — the panel warns and reports the finest reachable
+size. To go e.g. 100 km → 1 km, either draw a region much larger than
+the transition band, or refine in steps (100 → 30 → 10 → 3 → 1 km): each
+pass makes the seam finer, which shrinks the next pass's band.
 Both are journaled/reproducible: refinements cache the raw jigsaw cavity
 (bit-identical reruns), and hand edits replay from `edits.jsonl`
 (`fmesh2.edit.journal.apply_journal`). Acceptance walkthroughs with figures:

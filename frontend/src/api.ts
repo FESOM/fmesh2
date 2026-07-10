@@ -132,6 +132,9 @@ export interface RefineParams {
   polygon: [number, number][]; // (lon, lat) ring
   target_km: number;
   transition_km?: number | null;
+  /** Topography NetCDF path: re-runs the land cut inside the region, so the
+   * coastline is re-resolved from data instead of keeping the old polyline. */
+  topo?: string | null;
   out_dir?: string;
 }
 
