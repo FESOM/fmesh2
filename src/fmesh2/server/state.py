@@ -21,6 +21,7 @@ class AppState:
     cache_dir: Path | None = None
     coastline_source: Path | None = None
     meshes: dict[str, MeshEntry] = field(default_factory=dict)
+    project: object | None = None  # active fmesh2.project.Project
     _counter: int = 0
     _coast: dict[str, np.ndarray] | None = None
 

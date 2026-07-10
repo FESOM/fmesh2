@@ -1,10 +1,12 @@
-import { listMeshes, loadCoastline, loadMeshBuffers, totalBytes } from './api';
+import { listMeshes, loadCoastline, loadMeshBuffers, openProject, totalBytes } from './api';
 
 const loadMsg = document.getElementById('loadmsg')!;
 const bar = document.querySelector<HTMLDivElement>('#bar > div')!;
 
 async function boot() {
   loadMsg.textContent = 'looking for meshes…';
+  const projectPath = new URLSearchParams(location.search).get('project');
+  if (projectPath) await openProject(projectPath).catch((e) => console.warn(e));
   const meshes = await listMeshes();
   if (!meshes.length) {
     loadMsg.innerHTML =

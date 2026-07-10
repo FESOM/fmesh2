@@ -98,3 +98,105 @@ def test_cli_convert(core2_dir, tmp_path, capsys):
     assert (out / "meta.json").exists()
     assert (out / "pos.bin").stat().st_size == 127235 * 12
     assert "MB of buffers" in capsys.readouterr().out
+
+
+# ----------------------------------------------------- project CRUD (task 18)
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def open_project(client, tmp_path):
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir(exist_ok=True)
+    r = client.post("/api/project/open", json={"path": str(proj_dir)})
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_project_open_creates_and_reloads(client, tmp_path):
+    pj = open_project(client, tmp_path)
+    assert pj["name"] == "proj" and pj["layers"] == []
+    assert (tmp_path / "proj" / "project.yaml").exists()
+    assert (tmp_path / "proj" / "regions").is_dir()
+    # reopen: loads the saved file
+    pj2 = client.post("/api/project/open", json={"path": str(tmp_path / "proj")}).json()
+    assert pj2["name"] == "proj"
+    assert client.get("/api/project").json()["name"] == "proj"
+
+
+def test_project_put_layer_crud(client, tmp_path):
+    pj = open_project(client, tmp_path)
+    pj["layers"] = [
+        {"type": "base", "resolution": 300},
+        {"type": "mercator", "resolution": 300, "mode": "replace"},
+    ]
+    pj["grid"] = {"n_lat": 36, "n_lon": 72}
+    r = client.put("/api/project", json=pj)
+    assert r.status_code == 200
+    assert [l["type"] for l in r.json()["layers"]] == ["base", "mercator"]
+
+    # reorder + toggle survives a save/load roundtrip on disk
+    pj = r.json()
+    pj["layers"] = [pj["layers"][1], {**pj["layers"][0], "enabled": False}]
+    r = client.put("/api/project", json=pj)
+    got = client.get("/api/project").json()
+    assert [l["type"] for l in got["layers"]] == ["mercator", "base"]
+    assert got["layers"][1]["enabled"] is False
+
+    bad = dict(pj)
+    bad["layers"] = [{"type": "wavelet", "resolution": 10}]
+    assert client.put("/api/project", json=bad).status_code == 422
+
+
+def test_project_region_roundtrip(client, tmp_path):
+    open_project(client, tmp_path)
+    ring = [[-40, 10], [-20, 10], [-20, 30], [-40, 30], [-40, 10]]
+    gj = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}
+        ],
+    }
+    r = client.post("/api/project/regions/patch", json=gj)
+    assert r.status_code == 200 and r.json()["path"] == "regions/patch.geojson"
+    assert client.get("/api/project/regions/patch").json() == gj
+    assert client.delete("/api/project/regions/patch").status_code == 200
+    assert client.get("/api/project/regions/patch").status_code == 404
+
+    assert client.post("/api/project/regions/bad name!", json=gj).status_code in (400, 404, 422)
+    r = client.post("/api/project/regions/broken", json={"type": "FeatureCollection", "features": []})
+    assert r.status_code == 422
+    assert not (tmp_path / "proj" / "regions" / "broken.geojson").exists()
+
+
+def test_project_hfun_and_estimate(client, tmp_path):
+    pj = open_project(client, tmp_path)
+    pj["layers"] = [{"type": "base", "resolution": 300}]
+    pj["grid"] = {"n_lat": 72, "n_lon": 144}  # 277 km cells: fine enough for 300 km
+    client.put("/api/project", json=pj)
+
+    r = client.get("/api/project/hfun")
+    assert r.status_code == 200
+    n_lat, n_lon = int(r.headers["x-hfun-nlat"]), int(r.headers["x-hfun-nlon"])
+    assert (n_lat, n_lon) == (73, 145)
+    values = np.frombuffer(r.content, dtype=np.float32).reshape(n_lat, n_lon)
+    assert np.all(values == 300.0)
+    assert float(r.headers["x-hfun-min"]) == 300.0
+
+    est = client.get("/api/project/estimate").json()
+    assert est["elements_including_land"] > 10000
+    assert est["ocean_nodes"] == int(round(est["elements_including_land"] / 2 * 0.71))
+    assert est["warnings"] == []
+
+    # a fine layer on the coarse grid produces a structured warning
+    pj["layers"].append({"type": "base", "resolution": 25})
+    client.put("/api/project", json=pj)
+    est = client.get("/api/project/estimate").json()
+    assert any("too coarse" in w for w in est["warnings"])
+
+
+def test_project_endpoints_without_project(client):
+    assert client.get("/api/project").status_code == 404
+    assert client.get("/api/project/hfun").status_code == 404
+    assert client.get("/api/project/estimate").status_code == 404

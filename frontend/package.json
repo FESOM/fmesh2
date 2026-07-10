@@ -7,12 +7,14 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "three": "0.160.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/three": "0.160.0",
     "typescript": "~5.4.5",
     "vite": "^5.4.0",

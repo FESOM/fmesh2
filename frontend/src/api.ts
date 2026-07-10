@@ -83,3 +83,72 @@ export async function loadCoastline(): Promise<CoastBuffers> {
 export function totalBytes(meta: MeshMeta): number {
   return Object.values(meta.bytes).reduce((a, b) => a + b, 0);
 }
+
+// ---------------------------------------------------------- project (M2)
+
+export interface LayerData {
+  type: string;
+  name?: string;
+  enabled?: boolean;
+  mode?: string;
+  [key: string]: unknown;
+}
+
+export interface ProjectData {
+  path?: string;
+  name: string;
+  topo?: string | null;
+  grid?: { n_lat?: number | null; n_lon?: number | null };
+  layers: LayerData[];
+  [key: string]: unknown;
+}
+
+const jsonInit = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export const openProject = (path: string) =>
+  fetchJson<ProjectData>('/api/project/open', jsonInit('POST', { path }));
+export const getProject = () => fetchJson<ProjectData>('/api/project');
+export const putProject = (proj: ProjectData) =>
+  fetchJson<ProjectData>('/api/project', jsonInit('PUT', proj));
+export const saveRegion = (name: string, geojson: object) =>
+  fetchJson<{ path: string }>(`/api/project/regions/${name}`, jsonInit('POST', geojson));
+
+export interface Estimate {
+  elements_including_land: number;
+  ocean_nodes: number;
+  warnings: string[];
+}
+
+export const fetchEstimate = () => fetchJson<Estimate>('/api/project/estimate');
+
+export interface HfunGridData {
+  values: Float32Array;
+  nLat: number;
+  nLon: number;
+  min: number;
+  max: number;
+}
+
+export async function fetchHfun(): Promise<HfunGridData> {
+  const r = await fetch('/api/project/hfun');
+  if (!r.ok) {
+    let detail = r.statusText;
+    try {
+      detail = (await r.json()).detail ?? detail;
+    } catch {
+      /* not json */
+    }
+    throw new Error(`hfun: ${r.status} ${detail}`);
+  }
+  return {
+    values: new Float32Array(await r.arrayBuffer()),
+    nLat: Number(r.headers.get('x-hfun-nlat')),
+    nLon: Number(r.headers.get('x-hfun-nlon')),
+    min: Number(r.headers.get('x-hfun-min')),
+    max: Number(r.headers.get('x-hfun-max')),
+  };
+}

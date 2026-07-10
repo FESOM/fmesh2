@@ -86,6 +86,140 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown buffer {name!r}")
         return Response(content=coast[name].tobytes(), media_type="application/octet-stream")
 
+    # ------------------------------------------------------- active project
+
+    def _project():
+        if state.project is None:
+            raise HTTPException(status_code=404, detail="no project open")
+        return state.project
+
+    def _project_json():
+        proj = _project()
+        return {"path": str(proj.project_dir), **proj.model_dump(mode="json")}
+
+    @app.post("/api/project/open")
+    def project_open(req: OpenMeshRequest):
+        from fmesh2.project import Project, ProjectError
+
+        path = Path(req.path).expanduser()
+        try:
+            if path.is_dir() and not (path / "project.yaml").exists():
+                # empty directory: start a fresh project there
+                proj = Project(name=path.name or "project")
+                proj.save(path)
+            else:
+                proj = Project.load(path)
+        except ProjectError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        proj.ensure_layout()
+        state.project = proj
+        return _project_json()
+
+    @app.get("/api/project")
+    def project_get():
+        return _project_json()
+
+    @app.put("/api/project")
+    def project_put(body: dict):
+        from pydantic import ValidationError
+
+        from fmesh2.project import Project
+
+        proj = _project()
+        body.pop("path", None)
+        try:
+            updated = Project.model_validate(body)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        updated._dir = proj.project_dir
+        updated.save()
+        state.project = updated
+        return _project_json()
+
+    @app.post("/api/project/regions/{name}")
+    def region_save(name: str, body: dict):
+        proj = _project()
+        if not name.replace("-", "").replace("_", "").isalnum():
+            raise HTTPException(status_code=400, detail=f"invalid region name {name!r}")
+        import json as _json
+
+        from fmesh2.hfun.region_layer import load_region_rings
+
+        path = proj.regions_dir / f"{name}.geojson"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(body))
+        try:
+            load_region_rings(path)  # validate before anyone composes with it
+        except (ValueError, KeyError) as exc:
+            path.unlink()
+            raise HTTPException(status_code=422, detail=f"invalid region: {exc}") from exc
+        return {"path": f"regions/{name}.geojson"}
+
+    @app.get("/api/project/regions/{name}")
+    def region_get(name: str):
+        import json as _json
+
+        proj = _project()
+        path = proj.regions_dir / f"{name}.geojson"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"no region {name!r}")
+        return _json.loads(path.read_text())
+
+    @app.delete("/api/project/regions/{name}")
+    def region_delete(name: str):
+        proj = _project()
+        path = proj.regions_dir / f"{name}.geojson"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"no region {name!r}")
+        path.unlink()
+        return {"deleted": f"regions/{name}.geojson"}
+
+    def _compose_active():
+        import numpy as np
+
+        from fmesh2.hfun import compose
+
+        proj = _project()
+        try:
+            result = compose(proj)
+        except (ValueError, NotImplementedError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finite = result.grid.values[np.isfinite(result.grid.values)]
+        return result, finite
+
+    @app.get("/api/project/hfun")
+    def project_hfun():
+        import numpy as np
+
+        result, finite = _compose_active()
+        g = result.grid
+        values = np.asarray(g.values, dtype=np.float32)
+        return Response(
+            content=values.tobytes(),
+            media_type="application/octet-stream",
+            headers={
+                "X-Hfun-Nlat": str(g.lat.size),
+                "X-Hfun-Nlon": str(g.lon.size),
+                "X-Hfun-Min": str(float(finite.min()) if finite.size else 0.0),
+                "X-Hfun-Max": str(float(finite.max()) if finite.size else 0.0),
+            },
+        )
+
+    @app.get("/api/project/estimate")
+    def project_estimate():
+        from fmesh2.hfun import estimate_size
+
+        result, finite = _compose_active()
+        if not finite.size:
+            raise HTTPException(status_code=422, detail="hfun field is empty")
+        est = estimate_size(result.grid)
+        return {
+            "elements_including_land": est.elements_including_land,
+            "ocean_nodes": est.ocean_nodes,
+            "ocean_fraction": est.ocean_fraction,
+            "warnings": [w.message for w in result.warnings],
+        }
+
     # ------------------------------------------------------- generation jobs
 
     def _register_built_mesh(out_dir: str) -> dict:

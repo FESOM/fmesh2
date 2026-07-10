@@ -3,7 +3,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { initColorbar, updateColorbar } from './colorbar';
 import { Inspector } from './inspect';
 import { coastLayer } from './layers/coastLayer';
+import { HfunOverlay } from './layers/hfunOverlay';
 import { MeshLayer } from './layers/meshLayer';
+import { DrawMode } from './modes/draw';
+import { initLayerPanel } from './panels/layers';
 import { PickingPass } from './picking';
 import type { CoastBuffers, MeshBuffers, MeshMeta } from './types';
 import {
@@ -84,8 +87,46 @@ export function startViewer(input: ViewerInput): void {
     downY = e.clientY;
   });
   renderer.domElement.addEventListener('click', (e) => {
+    if (draw.active) return; // draw mode owns clicks
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return; // was a drag
     void inspector.pin(picking.pick(renderer, camera, e.clientX, e.clientY));
+  });
+
+  // ---------- project panel / hfun preview / draw mode (M2) ----------
+  const overlay = new HfunOverlay(mesh.uniforms.uMorph);
+  scene.add(overlay.mesh);
+  const refreshOverlay = () => {
+    if (!overlay.mesh.visible) return;
+    overlay
+      .refresh()
+      .then(([lo, hi]) => updateColorbar('hfun [km]', lo, hi, 1))
+      .catch(() => {
+        overlay.mesh.visible = false;
+        $('bHfun').classList.remove('on');
+      });
+  };
+  const panel = initLayerPanel({ onHfunStale: refreshOverlay });
+  const draw: DrawMode = new DrawMode({
+    canvas: renderer.domElement,
+    camera,
+    scene,
+    morph: mesh.uniforms.uMorph,
+    getMode: () => mode,
+    onFinish: async (verts) => {
+      await panel.addRegionLayer(verts);
+      refreshOverlay();
+    },
+    onState: (active, nVerts) => {
+      $('bDraw').classList.toggle('on', active);
+      if (active) {
+        $('hint').textContent =
+          nVerts < 3
+            ? 'draw: click to add vertices · Esc cancels'
+            : 'draw: click first vertex or Enter to close · drag handles to adjust';
+      } else {
+        $('hint').textContent = controlsConfig(mode).hint;
+      }
+    },
   });
 
   // ---------- HUD ----------
@@ -162,12 +203,23 @@ export function startViewer(input: ViewerInput): void {
       renderer.setPixelRatio(lo ? 1 : Math.min(devicePixelRatio, 2));
       $('bDens').textContent = `[D] res ×${renderer.getPixelRatio()}`;
     },
+    h: () => {
+      overlay.mesh.visible = !overlay.mesh.visible;
+      $('bHfun').classList.toggle('on', overlay.mesh.visible);
+      if (overlay.mesh.visible) refreshOverlay();
+      else showColorbar();
+    },
+    x: () => {
+      if (!panel.hasProject() && !draw.active) return; // needs an open project
+      draw.toggle();
+    },
   };
   addEventListener('keydown', (e) => {
     if (!(e.target as HTMLElement)?.closest('input,textarea')) actions[e.key.toLowerCase()]?.();
   });
   const buttons: Record<string, string> = {
     bWire: 'w', bField: 'c', bProj: 'g', bPoints: 'p', bCoast: 'l', bSpin: 'r', bDens: 'd',
+    bHfun: 'h', bDraw: 'x',
   };
   for (const [btn, key] of Object.entries(buttons)) {
     $(btn).addEventListener('click', () => actions[key]());
