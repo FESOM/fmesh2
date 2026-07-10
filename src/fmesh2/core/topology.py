@@ -74,7 +74,7 @@ class SphereKDTree:
     def nearest_km(self, lon_deg, lat_deg) -> tuple[np.ndarray, np.ndarray]:
         """(distance_km, index) of the nearest tree point for each query."""
         q = sphere_xyz(np.atleast_1d(lon_deg), np.atleast_1d(lat_deg))
-        chord, idx = self._tree.query(q)
+        chord, idx = self._tree.query(q, workers=-1)
         return chord_to_arc_km(chord), idx
 
     def query_radius(self, lon_deg, lat_deg, radius_km: float) -> list[np.ndarray]:

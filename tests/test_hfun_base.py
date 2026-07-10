@@ -121,7 +121,10 @@ def test_disabled_layer_skipped():
     assert np.all(v == 300.0)
 
 
-def test_unimplemented_layer_type_raises():
+def test_unimplemented_layer_type_raises(monkeypatch):
+    from fmesh2.hfun.compose import _EVALUATORS
+
+    monkeypatch.delitem(_EVALUATORS, "coast")
     proj = project_with([base(300), CoastLayer(type="coast", min_resolution=10, max_distance=100)])
     with pytest.raises(NotImplementedError, match="coast"):
         compose(proj)
