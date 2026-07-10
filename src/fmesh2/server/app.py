@@ -52,6 +52,27 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown buffer {name!r}") from None
         return Response(content=arr.tobytes(), media_type="application/octet-stream")
 
+    @app.get("/api/mesh/{mesh_id}/node/{idx}")
+    def node_info(mesh_id: str, idx: int):
+        import numpy as np
+
+        b = _entry(mesh_id).buffers
+        nv = b.meta["verts"]
+        if not 0 <= idx < nv:
+            raise HTTPException(status_code=404, detail=f"node {idx} out of range 0..{nv - 1}")
+        lon = (float(np.degrees(b.pos2[idx, 0])) + 180.0) % 360.0 - 180.0
+        mask = (b.edge[:, 0] == idx) | (b.edge[:, 1] == idx)
+        e = b.edge[mask]
+        neighbors = np.where(e[:, 0] == idx, e[:, 1], e[:, 0])
+        return {
+            "index": idx,
+            "lon": lon,
+            "lat": float(np.degrees(b.pos2[idx, 1])),
+            "res_km": float(b.res[idx]),
+            "depth_m": float(b.dep[idx]),
+            "neighbors": [int(x) for x in neighbors],
+        }
+
     @app.get("/api/coastline/{name}")
     def coastline_buffer(name: str):
         coast = state.coastline()

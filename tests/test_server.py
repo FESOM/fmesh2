@@ -67,6 +67,24 @@ def test_coastline_endpoint(client):
     assert client.get("/api/coastline/bogus").status_code == 404
 
 
+def test_node_info(client, core2_dir):
+    from fmesh2.core import read_fesom
+    from fmesh2.core.metrics import local_resolution_km
+
+    mesh_id = client.post("/api/meshes/open", json={"path": str(core2_dir)}).json()["id"]
+    info = client.get(f"/api/mesh/{mesh_id}/node/0").json()
+
+    mesh = read_fesom(core2_dir)
+    assert info["lon"] == pytest.approx(mesh.lon[0], abs=1e-4)
+    assert info["lat"] == pytest.approx(mesh.lat[0], abs=1e-4)
+    assert info["res_km"] == pytest.approx(local_resolution_km(mesh)[0], rel=1e-4)
+    assert info["depth_m"] == pytest.approx(abs(mesh.depth[0]), abs=0.01)
+    assert 3 <= len(info["neighbors"]) <= 10
+    assert all(isinstance(n, int) for n in info["neighbors"])
+
+    assert client.get(f"/api/mesh/{mesh_id}/node/999999999").status_code == 404
+
+
 def test_placeholder_page(client):
     r = client.get("/")
     assert r.status_code == 200

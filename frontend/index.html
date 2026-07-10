@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fmesh2</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; }
+  #canvas { width: 100%; height: 100%; display: block; }
+  .panel {
+    position: fixed; color: #dce3f0;
+    font: 12px/1.5 ui-monospace, Menlo, monospace;
+    background: rgba(10, 13, 20, 0.78); border: 1px solid #2a3142;
+    border-radius: 8px; padding: 10px 12px; user-select: none;
+  }
+  #hud { top: 10px; left: 10px; min-width: 250px; display: none; }
+  #hud b { color: #8ab4ff; }
+  #fps { font-size: 20px; color: #7ce38b; }
+  .dim { color: #7d8590; }
+  button {
+    background: #1c2333; color: #dce3f0; border: 1px solid #39415a;
+    border-radius: 5px; padding: 2px 8px; margin: 2px 3px 0 0;
+    font: 11px ui-monospace, monospace; cursor: pointer;
+  }
+  button.on { background: #2b4a7f; border-color: #5a7fc0; }
+  #cbar { bottom: 14px; left: 10px; display: none; }
+  #cbar canvas { display: block; width: 240px; height: 12px; border-radius: 3px; margin: 3px 0; }
+  #cblab { display: flex; justify-content: space-between; }
+  #inspect { top: 10px; right: 10px; min-width: 200px; display: none; }
+  #load {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #dce3f0; font: 14px ui-monospace, monospace; background: #0b0e14;
+    flex-direction: column; gap: 12px; z-index: 10;
+  }
+  #bar { width: 320px; height: 6px; background: #1c2333; border-radius: 3px; overflow: hidden; }
+  #bar > div { height: 100%; width: 0%; background: #5a9bff; transition: width 0.1s; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="hud" class="panel">
+  <div id="fps">-- fps</div>
+  <div id="ms" class="dim">-- ms/frame</div>
+  <div id="counts"></div>
+  <div id="loadtime" class="dim"></div>
+  <div style="margin-top:6px">
+    <button id="bWire">[W]ireframe</button><button id="bField">[C]olor: resolution</button><button id="bProj">[G] view: globe</button><br>
+    <button id="bPoints">[P]oints</button><button id="bCoast" class="on">[L] coast</button><button id="bSpin">[R]otate</button><button id="bDens">[D] res</button>
+  </div>
+  <div class="dim" style="margin-top:4px" id="hint">drag: orbit · wheel: zoom · hover: inspect</div>
+</div>
+
+<div id="cbar" class="panel">
+  <div id="cbtitle"><b>resolution [km]</b></div>
+  <canvas id="cbc" width="256" height="1"></canvas>
+  <div id="cblab"><span id="cbmin"></span><span id="cbmax"></span></div>
+</div>
+
+<div id="inspect" class="panel"></div>
+
+<div id="load"><div id="loadmsg">connecting…</div><div id="bar"><div></div></div></div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
