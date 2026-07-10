@@ -1,0 +1,4 @@
+name: minimal
+layers:
+  - type: base
+    resolution: 300
