@@ -24,11 +24,15 @@ results at 10M+ node scale in the browser, locally refine and hand-edit existing
   compare (`[B]`) flips between original and refined mesh in place.
 - **Node editing** (`[E]`) — select nodes by click, lasso, or radius brush;
   drag the selection in the tangent plane with live preview, or Laplacian-
-  smooth it (coastline anchored). Ops that would invert elements are
+  smooth it (coastline anchored). **Delete** selected nodes (`⌫` — the
+  element fan is removed and the hole re-triangulated; coastal deletions
+  locally straighten the shoreline, the classic hand-widening of straits)
+  and **add** nodes (click inside an element to split it, or just off the
+  coast to attach a new triangle). Ops that would invert elements are
   rejected and the offending triangles flash red. Every op lands in a JSONL
-  journal with full undo/redo (⌘Z/⇧⌘Z); save-as writes the FESOM2 triplet
-  plus `edits.jsonl`, and replaying the journal on the pristine mesh
-  reproduces the edited mesh bit-exact.
+  journal with full undo/redo (⌘Z/⇧⌘Z) — including topology changes; 
+  save-as writes the FESOM2 triplet plus `edits.jsonl`, and replaying the
+  journal on the pristine mesh reproduces the edited mesh bit-exact.
 
 ## Install (development)
 
@@ -83,14 +87,13 @@ median diff 0.000%, element count +1.9%).
 
 Refinement and hand-editing work on any opened mesh — no project needed.
 
-**Deleting / replacing nodes** is a remesh, not an edit op: draw a tight
-refine polygon around the node(s) — a polygon smaller than an element
-automatically selects the enclosed nodes' surrounding elements — and
-remesh at (or coarser than) the local resolution. The enclosed nodes are
-interior to the cavity, so they are removed and the patch is rebuilt at
-jigsaw quality; `mapping.csv` lists the deleted ids as `-1`. Caveat:
-nodes ON the coastline are ring vertices and survive; providing a topo
-file lets the land cut replace them where the data disagrees.
+**Deleting / adding nodes by hand** lives in edit mode (`[E]`): select and
+press `⌫` to delete (works for coastal nodes too — the coastline locally
+straightens to the chord between the neighbours), or use the *add* tool to
+split an element / attach a coast triangle. Both are journaled with full
+undo/redo and replay. For *bulk* replacement of a patch, a tight refine
+polygon is still the better tool: it rebuilds the whole neighbourhood at
+jigsaw quality (`mapping.csv` lists removed ids as `-1`).
 
 **Coastlines don't limit refinement.** Only the seam (the open-water
 boundary shared with the outside mesh) is transition-protected; coastline

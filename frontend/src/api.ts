@@ -301,3 +301,29 @@ export const editSave = (meshId: string, outDir: string) =>
     `/api/mesh/${meshId}/edit/save`,
     { out_dir: outDir },
   );
+
+/** Response of topology-changing edits (delete/add): buffers must be
+ * refetched — the server rebuilt them for the new node/element tables. */
+export interface EditTopoResult {
+  report: Record<string, unknown>;
+  journal: EditJournalState;
+  topology_changed: boolean;
+  meta: MeshMeta;
+}
+
+/** undo/redo response; topology_changed marks steps that need a buffer reload. */
+export interface EditStepResult {
+  update: VertexUpdate | null;
+  journal: EditJournalState;
+  topology_changed?: boolean;
+  meta?: MeshMeta;
+}
+
+export const editDelete = (meshId: string, ids: number[], allowCoast = true) =>
+  postEdit<EditTopoResult>(`/api/mesh/${meshId}/edit/delete`, {
+    ids,
+    allow_coast: allowCoast,
+  });
+
+export const editAdd = (meshId: string, lon: number, lat: number) =>
+  postEdit<EditTopoResult>(`/api/mesh/${meshId}/edit/add`, { lon, lat });

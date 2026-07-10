@@ -23,7 +23,8 @@ from fmesh2.core.topology import SphereKDTree
 from fmesh2.edit.cavity import CavityError, _polygon_plane
 from fmesh2.edit.journal import Journal, mesh_hash
 from fmesh2.edit.ops import EditError, EditOp, move_nodes, smooth_patch
-from fmesh2.viewer.buffers import ViewerBuffers
+from fmesh2.edit.topo_ops import TopologyOp, add_node, delete_nodes
+from fmesh2.viewer.buffers import ViewerBuffers, build_buffers
 
 
 class EditSession:
@@ -42,11 +43,20 @@ class EditSession:
         self.journal = Journal(self.journal_path, self.mesh)
         self.set_topo(topo_path)
         self._tree: SphereKDTree | None = None
+        self._set_dup_map(buffers)
 
+    def _set_dup_map(self, buffers: ViewerBuffers) -> None:
         n = self.mesh.n_nodes
         dup_src = np.asarray(buffers.dupsrc, dtype=np.int64)
         self._dup_vert_of = np.full(n, -1, dtype=np.int64)
         self._dup_vert_of[dup_src] = n + np.arange(dup_src.size)
+
+    def rebuild_buffers(self, name: str) -> ViewerBuffers:
+        """Fresh viewer buffers after a topology change (delete/add/undo)."""
+        buffers = build_buffers(self.mesh, name=name)
+        self._set_dup_map(buffers)
+        self._tree = None
+        return buffers
 
     def set_topo(self, topo_path: str | Path | None) -> None:
         """Set/replace the topography used to re-sample depths of moved nodes."""
@@ -91,13 +101,25 @@ class EditSession:
         self._tree = None
         return op
 
-    def undo(self) -> EditOp | None:
+    def delete(self, ids, allow_coast: bool) -> TopologyOp:
+        op = delete_nodes(self.mesh, ids, allow_coast=allow_coast)
+        self.journal.record(op)
+        self._tree = None
+        return op
+
+    def add(self, lon: float, lat: float) -> TopologyOp:
+        op = add_node(self.mesh, lon, lat, topo=self.topo)
+        self.journal.record(op)
+        self._tree = None
+        return op
+
+    def undo(self) -> EditOp | TopologyOp | None:
         op = self.journal.undo(self.mesh)
         if op is not None:
             self._tree = None
         return op
 
-    def redo(self) -> EditOp | None:
+    def redo(self) -> EditOp | TopologyOp | None:
         op = self.journal.redo(self.mesh)
         if op is not None:
             self._tree = None

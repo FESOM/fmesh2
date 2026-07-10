@@ -213,6 +213,16 @@ export function startViewer(input: ViewerInput): void {
     onHint: (text) => {
       $('hint').textContent = text ?? controlsConfig(mode).hint;
     },
+    onTopologyChanged: async (m) => {
+      // delete/add changed the node/element tables: refetch the rebuilt
+      // buffers and reinstall the current mesh in place
+      const id = (showing === 'A' ? slotA : slotB!).id;
+      const bufs = await loadMeshBuffers(id);
+      const slot = { id, meta: m, buffers: bufs };
+      if (showing === 'A') slotA = slot;
+      else slotB = slot;
+      installMesh(id, m, bufs);
+    },
   });
 
   // ---------- HUD ----------

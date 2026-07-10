@@ -340,3 +340,129 @@ def test_core2_edit_replay_and_io_roundtrip(core2_dir, tmp_path):
     out = tmp_path / "edited_mesh"
     write_fesom(mesh, out)
     assert mesh_hash(read_fesom(out)) == mesh_hash(mesh)
+
+
+# --------------------------------------------------- topology ops (delete/add)
+
+
+def coast_grid(n=9):
+    """Grid mesh with proper boundary coast flags."""
+    mesh = grid_mesh(n)
+    mesh.coast_flag = boundary_nodes(mesh.tri, mesh.n_nodes).astype(np.int8)
+    return mesh
+
+
+def test_delete_interior_node_and_undo_identity(tmp_path):
+    from fmesh2.edit.topo_ops import delete_nodes
+
+    mesh = coast_grid()
+    h0 = mesh_hash(mesh)
+    n_b0 = len(boundary_nodes(mesh.tri, mesh.n_nodes).nonzero()[0])
+    journal = Journal(tmp_path / "e.jsonl", mesh)
+
+    op = delete_nodes(mesh, [40])  # center node, valence 6
+    journal.record(op)
+    assert mesh.n_nodes == 80 and mesh.n_tri == 126  # -1 node, 6 tri -> 4
+    assert int(mesh.tri.max()) < mesh.n_nodes
+    assert op.report["min_fill_angle_deg"] > 20
+    # interior delete leaves the boundary untouched
+    assert len(boundary_nodes(mesh.tri, mesh.n_nodes).nonzero()[0]) == n_b0
+
+    journal.undo(mesh)
+    assert mesh_hash(mesh) == h0  # bit-exact
+    journal.redo(mesh)
+    assert mesh.n_nodes == 80
+
+
+def test_delete_coastal_node_straightens_boundary(tmp_path):
+    from fmesh2.core.topology import boundary_edges
+    from fmesh2.edit.topo_ops import delete_nodes
+
+    mesh = coast_grid()
+    h0 = mesh_hash(mesh)
+    journal = Journal(tmp_path / "e.jsonl", mesh)
+    with pytest.raises(EditError, match="coastline"):
+        delete_nodes(mesh, [4])  # mid-edge boundary node
+    assert mesh_hash(mesh) == h0  # rejection leaves the mesh untouched
+
+    op = delete_nodes(mesh, [4], allow_coast=True)
+    journal.record(op)
+    assert mesh.n_nodes == 80
+    # the two boundary neighbours are now joined by a chord
+    be = {tuple(sorted(e)) for e in boundary_edges(mesh.tri, mesh.n_nodes).tolist()}
+    assert (3, 4) in be  # old ids 3 and 5; 5 shifted down to 4
+    journal.undo(mesh)
+    assert mesh_hash(mesh) == h0
+
+
+def test_delete_multiple_and_pinch_rejection():
+    from fmesh2.edit.topo_ops import delete_nodes
+
+    mesh = coast_grid(n=11)
+    h0 = mesh_hash(mesh)
+    op = delete_nodes(mesh, [48, 49, 60])  # adjacent interior nodes
+    assert mesh.n_nodes == 118 and len(op.steps) == 3
+
+    # bowtie: two triangles sharing only node 2 -> deleting 2 disconnects
+    bow = Mesh(
+        lon=np.array([0.0, 1.0, 0.5, 0.0, 1.0]),
+        lat=np.array([0.0, 0.0, 0.5, 1.0, 1.0]),
+        tri=np.array([[0, 1, 2], [2, 4, 3]], dtype=np.int32),
+    )
+    with pytest.raises(EditError, match="pinch|disconnect"):
+        delete_nodes(bow, [2], allow_coast=True)
+    del h0
+
+
+def test_add_node_split_and_attach(tmp_path):
+    from fmesh2.edit.topo_ops import add_node
+
+    mesh = coast_grid()
+    h0 = mesh_hash(mesh)
+    journal = Journal(tmp_path / "e.jsonl", mesh)
+
+    op = add_node(mesh, 4.3, 4.2)  # inside an element
+    journal.record(op)
+    assert op.report["mode"] == "split"
+    assert mesh.n_nodes == 82 and mesh.n_tri == 130  # +1 node, 1 tri -> 3
+    assert mesh.coast_flag[-1] == 0
+    assert mesh.depth[-1] == pytest.approx(100.0)  # interpolated flat field
+
+    op2 = add_node(mesh, 4.0, -0.6)  # outside, near the southern boundary
+    journal.record(op2)
+    assert op2.report["mode"] == "attach"
+    assert mesh.coast_flag[-1] == 1
+    assert mesh.n_tri == 131
+
+    # too far from the mesh
+    with pytest.raises(EditError, match="near its boundary"):
+        add_node(mesh, 40.0, -30.0)
+
+    journal.undo(mesh)
+    journal.undo(mesh)
+    assert mesh_hash(mesh) == h0
+
+
+def test_mixed_journal_with_topology_replays(tmp_path):
+    from fmesh2.edit.topo_ops import add_node, delete_nodes
+
+    live = coast_grid(n=11)
+    pristine = copy_mesh(live)
+    journal = Journal(tmp_path / "edits.jsonl", live)
+
+    journal.record(move_nodes(live, [60], [[live.lon[60] + 0.2, live.lat[60] - 0.1]]))
+    journal.record(delete_nodes(live, [48]))
+    journal.record(add_node(live, 5.4, 5.3))
+    interior = np.flatnonzero(~boundary_nodes(live.tri, live.n_nodes))
+    journal.record(smooth_patch(live, interior[:20], iterations=1, strength=0.4))
+    journal.undo(live)  # undo the smooth
+    journal.record(delete_nodes(live, [int(live.n_nodes - 1)]))  # kill the added node
+
+    replayed = apply_journal(copy_mesh(pristine), tmp_path / "edits.jsonl")
+    assert mesh_hash(replayed) == mesh_hash(live)
+
+    # a reloaded journal can still unwind everything back to the base
+    reloaded = Journal(tmp_path / "edits.jsonl")
+    while reloaded.can_undo:
+        reloaded.undo(live)
+    assert mesh_hash(live) == mesh_hash(pristine)

@@ -43,6 +43,16 @@ class EditSmoothRequest(BaseModel):
     strength: float = Field(default=0.5, gt=0, le=1)
 
 
+class EditDeleteRequest(BaseModel):
+    ids: list[int] = Field(min_length=1)
+    allow_coast: bool = False
+
+
+class EditAddRequest(BaseModel):
+    lon: float
+    lat: float
+
+
 class EditSaveRequest(BaseModel):
     out_dir: str
 
@@ -369,23 +379,62 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise _edit_error(exc) from exc
         return _op_response(sess, op)
 
-    @app.post("/api/mesh/{mesh_id}/edit/undo")
-    def edit_undo(mesh_id: str):
-        _, sess = _session(mesh_id)
-        op = sess.undo()
+    def _topo_response(entry, sess, op) -> dict:
+        entry.buffers = sess.rebuild_buffers(entry.buffers.meta["name"])
+        return {
+            "report": op.report,
+            "journal": sess.journal_state(),
+            "topology_changed": True,
+            "meta": entry.buffers.meta,
+        }
+
+    @app.post("/api/mesh/{mesh_id}/edit/delete")
+    def edit_delete(mesh_id: str, req: EditDeleteRequest):
+        from fmesh2.edit.ops import EditError
+
+        entry, sess = _session(mesh_id)
+        try:
+            op = sess.delete(req.ids, req.allow_coast)
+        except EditError as exc:
+            raise _edit_error(exc) from exc
+        return _topo_response(entry, sess, op)
+
+    @app.post("/api/mesh/{mesh_id}/edit/add")
+    def edit_add(mesh_id: str, req: EditAddRequest):
+        from fmesh2.edit.ops import EditError
+
+        entry, sess = _session(mesh_id)
+        try:
+            op = sess.add(req.lon, req.lat)
+        except EditError as exc:
+            raise _edit_error(exc) from exc
+        return _topo_response(entry, sess, op)
+
+    def _step_response(entry, sess, op) -> dict:
+        from fmesh2.edit.topo_ops import TopologyOp
+
+        if isinstance(op, TopologyOp):
+            entry.buffers = sess.rebuild_buffers(entry.buffers.meta["name"])
+            return {
+                "update": None,
+                "journal": sess.journal_state(),
+                "topology_changed": True,
+                "meta": entry.buffers.meta,
+            }
         return {
             "update": sess.vertex_updates(op.ids) if op is not None else None,
             "journal": sess.journal_state(),
         }
 
+    @app.post("/api/mesh/{mesh_id}/edit/undo")
+    def edit_undo(mesh_id: str):
+        entry, sess = _session(mesh_id)
+        return _step_response(entry, sess, sess.undo())
+
     @app.post("/api/mesh/{mesh_id}/edit/redo")
     def edit_redo(mesh_id: str):
-        _, sess = _session(mesh_id)
-        op = sess.redo()
-        return {
-            "update": sess.vertex_updates(op.ids) if op is not None else None,
-            "journal": sess.journal_state(),
-        }
+        entry, sess = _session(mesh_id)
+        return _step_response(entry, sess, sess.redo())
 
     @app.post("/api/mesh/{mesh_id}/edit/save")
     def edit_save(mesh_id: str, req: EditSaveRequest):

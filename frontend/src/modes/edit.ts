@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import {
   EditRejected,
+  editAdd,
+  editDelete,
   editMove,
   editOpen,
   editRedo,
@@ -11,6 +13,8 @@ import {
   editUndo,
   type EditJournalState,
   type EditOpResult,
+  type EditStepResult,
+  type EditTopoResult,
   type VertexUpdate,
 } from '../api';
 import {
@@ -24,7 +28,7 @@ import {
 import type { MeshLayer } from '../layers/meshLayer';
 import type { PickingPass } from '../picking';
 import { Selection } from '../selection';
-import type { MeshBuffers } from '../types';
+import type { MeshBuffers, MeshMeta } from '../types';
 import { DrawMode } from './draw';
 
 export interface EditContext {
@@ -39,14 +43,17 @@ export interface EditContext {
   getBuffers: () => MeshBuffers;
   currentMeshId: () => string;
   onHint: (text: string | null) => void;
+  /** Reload buffers + reinstall the current mesh after a topology change. */
+  onTopologyChanged: (meta: MeshMeta) => Promise<void>;
 }
 
-type Tool = 'select' | 'lasso' | 'brush';
+type Tool = 'select' | 'lasso' | 'brush' | 'add';
 
 const HINTS: Record<Tool, string> = {
-  select: 'edit: click toggles a node · drag a selected node to move the selection',
+  select: 'edit: click toggles a node · drag a selected node to move the selection · ⌫ deletes it',
   lasso: 'edit lasso: click to outline · Enter/first vertex closes · Esc cancels',
   brush: 'edit brush: drag to select · hold Alt to deselect',
+  add: 'edit add: click inside the mesh to split an element · click just off the coast to attach',
 };
 
 /** Edit mode (M4): select (click / lasso / brush), tangent-plane drag with
@@ -94,7 +101,7 @@ export class EditMode {
       <div><b>edit</b> <button id="bEdit">[E] edit nodes</button></div>
       <div id="editTools" style="display:none">
         <div>
-          <button id="bToolSel" class="on">click</button><button id="bToolLasso">lasso</button><button id="bToolBrush">brush</button>
+          <button id="bToolSel" class="on">click</button><button id="bToolLasso">lasso</button><button id="bToolBrush">brush</button><button id="bToolAdd">add</button>
           <label>brush km <input id="editBrushR" type="number" step="any" value="150"></label>
         </div>
         <div id="editSelCount" class="dim">0 nodes selected</div>
@@ -104,7 +111,7 @@ export class EditMode {
           <label>strength <input id="editStr" type="number" step="0.1" min="0.1" max="1" value="0.5"></label>
         </div>
         <div>
-          <button id="bUndoOp" disabled>[⌘Z] undo</button><button id="bRedoOp" disabled>[⇧⌘Z] redo</button><button id="bClearSel">clear</button>
+          <button id="bUndoOp" disabled>[⌘Z] undo</button><button id="bRedoOp" disabled>[⇧⌘Z] redo</button><button id="bDelSel">[⌫] delete</button><button id="bClearSel">clear</button>
         </div>
         <div>
           <label>save as <input id="editOut" type="text" placeholder="/absolute/output/dir"></label>
@@ -124,6 +131,8 @@ export class EditMode {
     panel.querySelector('#bToolSel')!.addEventListener('click', () => this.setTool('select'));
     panel.querySelector('#bToolLasso')!.addEventListener('click', () => this.setTool('lasso'));
     panel.querySelector('#bToolBrush')!.addEventListener('click', () => this.setTool('brush'));
+    panel.querySelector('#bToolAdd')!.addEventListener('click', () => this.setTool('add'));
+    panel.querySelector('#bDelSel')!.addEventListener('click', () => void this.deleteSelection());
     panel.querySelector('#bSmoothSel')!.addEventListener('click', () => void this.smooth());
     panel.querySelector('#bUndoOp')!.addEventListener('click', () => void this.undo());
     panel.querySelector('#bRedoOp')!.addEventListener('click', () => void this.redo());
@@ -161,9 +170,35 @@ export class EditMode {
     else void this.enter();
   }
 
-  /** The scene calls this on A/B swaps: sessions/selections are per mesh. */
+  private rebinding = false;
+
+  /** The scene calls this on every mesh install. A/B swaps exit edit mode
+   * (sessions are per mesh); topology reloads of the SAME mesh keep it. */
   onMeshInstalled(): void {
+    if (this.rebinding) return;
     if (this.active) this.exit();
+  }
+
+  /** Re-attach selection/highlights to the freshly installed mesh layer. */
+  private rebind(): void {
+    const layer = this.ctx.getLayer();
+    this.selection = new Selection(layer.meta.nodes, this.ctx.getBuffers().dupsrc);
+    layer.selPoints.visible = true;
+    this.refreshSelCount();
+    this.refreshJournalButtons();
+  }
+
+  /** Handle a topology-changing response: reload buffers, reinstall, rebind. */
+  private async applyTopo(status: string, res: EditTopoResult): Promise<void> {
+    this.journal = res.journal;
+    this.rebinding = true;
+    try {
+      await this.ctx.onTopologyChanged(res.meta);
+    } finally {
+      this.rebinding = false;
+    }
+    this.rebind();
+    this.setStatus(status);
   }
 
   private async enter(): Promise<void> {
@@ -219,6 +254,7 @@ export class EditMode {
     document.getElementById('bToolSel')!.classList.toggle('on', this.tool === 'select');
     document.getElementById('bToolLasso')!.classList.toggle('on', this.tool === 'lasso');
     document.getElementById('bToolBrush')!.classList.toggle('on', this.tool === 'brush');
+    document.getElementById('bToolAdd')!.classList.toggle('on', this.tool === 'add');
   }
 
   private refreshJournalButtons(): void {
@@ -368,9 +404,14 @@ export class EditMode {
       this.dragMoved = false;
       return;
     }
-    if (this.tool !== 'select') return;
-    // an orbit gesture ends in a click too — only true clicks toggle nodes
+    // an orbit gesture ends in a click too — only true clicks act
     if (Math.hypot(e.clientX - this.downX, e.clientY - this.downY) > 4) return;
+    if (this.tool === 'add') {
+      const ll = this.lasso.pickLonLat(e.clientX, e.clientY);
+      if (ll) void this.addAt(ll);
+      return;
+    }
+    if (this.tool !== 'select') return;
     const node = this.pickNode(e.clientX, e.clientY);
     if (node < 0 || !this.selection) return;
     const { selected, verts } = this.selection.toggle(node);
@@ -464,6 +505,50 @@ export class EditMode {
     }
   }
 
+  private async deleteSelection(): Promise<void> {
+    if (this.busy) return;
+    if (!this.selection?.size) {
+      this.setStatus('select nodes to delete first', true);
+      return;
+    }
+    this.busy = true;
+    try {
+      const ids = this.selection.ids();
+      const res = await editDelete(this.ctx.currentMeshId(), ids, true);
+      const r = res.report as { n_deleted?: number; min_fill_angle_deg?: number | null };
+      await this.applyTopo(
+        `deleted ${r.n_deleted ?? ids.length} node(s)` +
+          (r.min_fill_angle_deg != null
+            ? ` · fill min angle ${r.min_fill_angle_deg.toFixed(1)}°`
+            : ''),
+        res,
+      );
+    } catch (err) {
+      this.setStatus(err instanceof Error ? err.message : String(err), true);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private async addAt(ll: LonLat): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const res = await editAdd(this.ctx.currentMeshId(), ll.lon, ll.lat);
+      const r = res.report as { mode?: string };
+      await this.applyTopo(
+        r.mode === 'attach'
+          ? 'added a coast node (attached to the boundary)'
+          : 'added a node (element split in three)',
+        res,
+      );
+    } catch (err) {
+      this.setStatus(err instanceof Error ? err.message : String(err), true);
+    } finally {
+      this.busy = false;
+    }
+  }
+
   private async undo(): Promise<void> {
     await this.step(editUndo, 'undid');
   }
@@ -473,13 +558,22 @@ export class EditMode {
   }
 
   private async step(
-    call: (id: string) => Promise<{ update: VertexUpdate | null; journal: EditJournalState }>,
+    call: (id: string) => Promise<EditStepResult>,
     verb: string,
   ): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     try {
       const res = await call(this.ctx.currentMeshId());
+      if (res.topology_changed && res.meta) {
+        await this.applyTopo(`${verb} last op (topology restored)`, {
+          report: {},
+          journal: res.journal,
+          topology_changed: true,
+          meta: res.meta,
+        });
+        return;
+      }
       if (res.update) this.applyUpdate(res.update);
       this.journal = res.journal;
       this.refreshJournalButtons();
@@ -567,6 +661,13 @@ export class EditMode {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       void (e.shiftKey ? this.redo() : this.undo());
+    } else if (
+      (e.key === 'Backspace' || e.key === 'Delete') &&
+      !this.lasso.active &&
+      this.selection?.size
+    ) {
+      e.preventDefault();
+      void this.deleteSelection();
     } else if (e.key === 'Escape' && !this.lasso.active) {
       this.exit();
     }

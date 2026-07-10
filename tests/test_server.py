@@ -415,3 +415,57 @@ def test_edit_move_inversion_and_smooth_api(client, core2_dir):
     assert body["report"]["n_nodes"] > 0
     assert len(body["update"]["verts"]) >= body["report"]["n_nodes"]
     assert body["journal"]["n_ops"] == 1
+
+
+def test_edit_delete_and_add_api(client, core2_dir):
+    from fmesh2.core.io_fesom import read_fesom
+    from fmesh2.core.topology import boundary_nodes
+
+    mesh_id = _open_edit(client, core2_dir)
+    mesh = read_fesom(core2_dir)
+    coast = boundary_nodes(mesh.tri, mesh.n_nodes)
+
+    # one interior open-ocean node
+    ids = client.post(
+        f"/api/mesh/{mesh_id}/edit/select",
+        json={"center": [-35, 29], "radius_km": 150},
+    ).json()["ids"]
+    interior = [i for i in ids if not coast[i]]
+
+    # deleting a coastal node without allow_coast is refused with a message
+    coastal = int(np.flatnonzero(coast)[0])
+    r = client.post(
+        f"/api/mesh/{mesh_id}/edit/delete", json={"ids": [coastal]}
+    )
+    assert r.status_code == 422 and "coastline" in r.json()["detail"]["message"]
+
+    # interior delete: topology response + rebuilt buffers
+    r = client.post(
+        f"/api/mesh/{mesh_id}/edit/delete", json={"ids": interior[:1]}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["topology_changed"] is True
+    assert body["meta"]["nodes"] == 126857
+    assert body["report"]["n_deleted"] == 1
+    assert client.get(f"/api/mesh/{mesh_id}/meta").json()["nodes"] == 126857
+    pos = client.get(f"/api/mesh/{mesh_id}/buffer/pos").content
+    assert len(pos) == body["meta"]["verts"] * 12
+
+    # undo restores the topology (and says so)
+    r = client.post(f"/api/mesh/{mesh_id}/edit/undo")
+    assert r.json()["topology_changed"] is True
+    assert r.json()["meta"]["nodes"] == 126858
+
+    # add a node in open ocean: element split
+    r = client.post(
+        f"/api/mesh/{mesh_id}/edit/add", json={"lon": -35.2, "lat": 29.1}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["report"]["mode"] == "split"
+    assert body["meta"]["nodes"] == 126859
+
+    # far from any mesh point -> rejected  (mid-Sahara)
+    r = client.post(f"/api/mesh/{mesh_id}/edit/add", json={"lon": 10, "lat": 23})
+    assert r.status_code == 422

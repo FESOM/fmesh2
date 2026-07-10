@@ -30,8 +30,12 @@ import numpy as np
 from fmesh2.core.mesh import Mesh
 
 from .ops import EditError, EditOp
+from .topo_ops import TopologyOp, TopologyStep, apply_step, undo_step
 
 _FORMAT_VERSION = 1
+
+#: journal record kinds that change topology (node/element counts)
+TOPOLOGY_KINDS = ("delete", "add")
 
 
 def mesh_hash(mesh: Mesh) -> str:
@@ -52,7 +56,60 @@ def mesh_hash(mesh: Mesh) -> str:
     return h.hexdigest()
 
 
-def _op_to_record(op: EditOp) -> dict:
+def _step_to_dict(step: TopologyStep) -> dict:
+    d = {
+        "kind": step.kind,
+        "node_ids": step.node_ids.tolist(),
+        "node_lonlat": step.node_lonlat.tolist(),
+        "tri_removed_idx": step.tri_removed_idx.tolist(),
+        "tri_removed": step.tri_removed.tolist(),
+        "tri_added": step.tri_added.tolist(),
+    }
+    if step.node_depth is not None:
+        d["node_depth"] = step.node_depth.tolist()
+    if step.node_coast is not None:
+        d["node_coast"] = step.node_coast.tolist()
+    if step.coast_ids is not None:
+        d["coast_ids"] = step.coast_ids.tolist()
+        d["coast_before"] = step.coast_before.tolist()
+        d["coast_after"] = step.coast_after.tolist()
+    return d
+
+
+def _step_from_dict(d: dict) -> TopologyStep:
+    def arr(key, dtype, shape2=None):
+        if key not in d:
+            return None
+        a = np.asarray(d[key], dtype=dtype)
+        if shape2 and a.size == 0:
+            a = a.reshape(0, shape2)
+        return a
+
+    return TopologyStep(
+        kind=d["kind"],
+        node_ids=np.asarray(d["node_ids"], dtype=np.int64),
+        node_lonlat=np.asarray(d["node_lonlat"], dtype=np.float64).reshape(-1, 2),
+        node_depth=arr("node_depth", np.float64),
+        node_coast=arr("node_coast", np.int8),
+        tri_removed_idx=np.asarray(d["tri_removed_idx"], dtype=np.int64),
+        tri_removed=arr("tri_removed", np.int64, 3),
+        tri_added=arr("tri_added", np.int64, 3),
+        coast_ids=arr("coast_ids", np.int64),
+        coast_before=arr("coast_before", np.int8),
+        coast_after=arr("coast_after", np.int8),
+    )
+
+
+def _op_to_record(op: EditOp | TopologyOp) -> dict:
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if isinstance(op, TopologyOp):
+        return {
+            "kind": op.kind,
+            "steps": [_step_to_dict(s) for s in op.steps],
+            "params": op.params,
+            "report": op.report,
+            "t": stamp,
+        }
     rec = {
         "kind": op.kind,
         "ids": op.ids.tolist(),
@@ -60,7 +117,7 @@ def _op_to_record(op: EditOp) -> dict:
         "after": op.after.tolist(),
         "params": op.params,
         "report": op.report,
-        "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "t": stamp,
     }
     if op.after_depth is not None:
         rec["before_depth"] = op.before_depth.tolist()
@@ -68,7 +125,14 @@ def _op_to_record(op: EditOp) -> dict:
     return rec
 
 
-def _op_from_record(rec: dict) -> EditOp:
+def _op_from_record(rec: dict) -> EditOp | TopologyOp:
+    if rec["kind"] in TOPOLOGY_KINDS:
+        return TopologyOp(
+            kind=rec["kind"],
+            steps=[_step_from_dict(s) for s in rec["steps"]],
+            params=rec.get("params", {}),
+            report=rec.get("report", {}),
+        )
     return EditOp(
         kind=rec["kind"],
         ids=np.asarray(rec["ids"], dtype=np.int64),
@@ -101,6 +165,22 @@ def _set_state(mesh: Mesh, op: EditOp, lonlat: np.ndarray, depth) -> None:
         if mesh.depth is None:
             raise EditError("journal op carries depths but the mesh has none")
         mesh.depth[op.ids] = depth
+
+
+def _apply_op(mesh: Mesh, op: EditOp | TopologyOp) -> None:
+    if isinstance(op, TopologyOp):
+        for step in op.steps:
+            apply_step(mesh, step)
+    else:
+        _set_state(mesh, op, op.after, op.after_depth)
+
+
+def _unapply_op(mesh: Mesh, op: EditOp | TopologyOp) -> None:
+    if isinstance(op, TopologyOp):
+        for step in reversed(op.steps):
+            undo_step(mesh, step)
+    else:
+        _set_state(mesh, op, op.before, op.before_depth)
 
 
 class Journal:
@@ -151,7 +231,7 @@ class Journal:
                     if not self._redo:
                         raise EditError(f"{self.path}:{lineno}: redo with empty stack")
                     self._undo.append(self._redo.pop())
-                elif kind in ("move", "smooth"):
+                elif kind in ("move", "smooth", *TOPOLOGY_KINDS):
                     self._undo.append(_op_from_record(rec))
                     self._redo.clear()
                 else:
@@ -163,7 +243,7 @@ class Journal:
             f.flush()
 
     @property
-    def ops(self) -> list[EditOp]:
+    def ops(self) -> list[EditOp | TopologyOp]:
         """The active (applied, not undone) ops, oldest first."""
         return list(self._undo)
 
@@ -175,28 +255,28 @@ class Journal:
     def can_redo(self) -> bool:
         return bool(self._redo)
 
-    def record(self, op: EditOp) -> None:
+    def record(self, op: EditOp | TopologyOp) -> None:
         """Log an op already applied to the mesh; invalidates the redo stack."""
         self._undo.append(op)
         self._redo.clear()
         self._append_line(_op_to_record(op))
 
-    def undo(self, mesh: Mesh) -> EditOp | None:
+    def undo(self, mesh: Mesh) -> EditOp | TopologyOp | None:
         """Revert the latest op on `mesh`; None when there is nothing to undo."""
         if not self._undo:
             return None
         op = self._undo.pop()
-        _set_state(mesh, op, op.before, op.before_depth)
+        _unapply_op(mesh, op)
         self._redo.append(op)
         self._append_line({"kind": "undo"})
         return op
 
-    def redo(self, mesh: Mesh) -> EditOp | None:
+    def redo(self, mesh: Mesh) -> EditOp | TopologyOp | None:
         """Re-apply the latest undone op; None when there is nothing to redo."""
         if not self._redo:
             return None
         op = self._redo.pop()
-        _set_state(mesh, op, op.after, op.after_depth)
+        _apply_op(mesh, op)
         self._undo.append(op)
         self._append_line({"kind": "redo"})
         return op
@@ -221,5 +301,5 @@ def apply_journal(mesh: Mesh, journal: Journal | str | Path) -> Mesh:
             f"(expected hash {journal.base_hash[:12]}...)"
         )
     for op in journal.ops:
-        _set_state(mesh, op, op.after, op.after_depth)
+        _apply_op(mesh, op)
     return mesh
