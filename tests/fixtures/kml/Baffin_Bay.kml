@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
+<Document>
+	<name>Baffin_Bay.kml</name>
+	<Style id="inline">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<Style id="inline0">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<Style id="inline1">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<StyleMap id="inline2">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#inline0</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#inline</styleUrl>
+		</Pair>
+	</StyleMap>
+	<StyleMap id="inline3">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#inline1</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#inline4</styleUrl>
+		</Pair>
+	</StyleMap>
+	<Style id="inline4">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<Folder>
+		<name>Temporary Places</name>
+		<open>1</open>
+		<Placemark>
+			<name>Baffin_Bay_internal</name>
+			<styleUrl>#inline2</styleUrl>
+			<LineString>
+				<tessellate>1</tessellate>
+				<coordinates>
+					-64.78602851720802,67.6857506981011,0 -52.64335651434302,68.45802048665931,0 -49.29145133116408,68.30779276694152,0 -46.43101053527018,71.76696448118609,0 -47.60487801235369,76.66181157818646,0 -46.03851426619548,80.75839711211182,0 -45.29075171787438,82.96155904368194,0 -75.7623309885403,83.70360933427916,0 -79.51209310271382,82.84488736675306,0 -84.39460510050161,80.16515996319099,0 -83.33483176880975,78.33992495201299,0 -82.06100893804239,76.79856192024072,0 -88.19474270210239,76.78783998390387,0 -90.82038313668238,76.43031056428741,0 -89.63015919989073,75.23966065194791,0 -87.58410417825537,73.37412398845622,0 -82.72960345483054,72.18145652921146,0 -74.75161830824487,70.96427390681211,0 -69.59467141499884,69.33917918873293,0 -68.04234937730902,67.76412138145824,0 -66.22703781527787,67.7658629772877,0 
+				</coordinates>
+			</LineString>
+		</Placemark>
+		<Placemark>
+			<name>Baffin_Bay_external</name>
+			<styleUrl>#inline3</styleUrl>
+			<LineString>
+				<tessellate>1</tessellate>
+				<coordinates>
+					-63.83859888405526,65.60264342653011,0 -51.30617404522048,65.65204143554523,0 -45.86860496094116,66.58034802110959,0 -39.54455462311208,72.60561092861711,0 -35.37734920514089,77.46821152087837,0 -34.49910527290685,81.30067315453562,0 -34.55225510488845,83.50677190164377,0 -84.2057741410249,85.10608556283213,0 -92.99294788355155,82.49293813835976,0 -90.90990043458463,80.27071888436291,0 -95.52021046825035,76.89923710308219,0 -94.86477165578493,75.21692762759605,0 -93.59515009622373,73.89890327349318,0 -88.26669496760431,71.74568550918322,0 -80.45696467063563,70.68319073799553,0 -76.37307252604924,69.99061404899274,0 -71.55038801976384,68.19975878230744,0 -67.3934788228551,66.96109480895609,0 -64.29104217182319,65.90242659702572,0 
+				</coordinates>
+			</LineString>
+		</Placemark>
+	</Folder>
+</Document>
+</kml>

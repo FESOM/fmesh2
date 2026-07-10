@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
+<Document>
+	<name>Peabody.kml</name>
+	<Style id="inline">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<StyleMap id="inline0">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#inline3</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#inline2</styleUrl>
+		</Pair>
+	</StyleMap>
+	<StyleMap id="inline1">
+		<Pair>
+			<key>normal</key>
+			<styleUrl>#inline4</styleUrl>
+		</Pair>
+		<Pair>
+			<key>highlight</key>
+			<styleUrl>#inline</styleUrl>
+		</Pair>
+	</StyleMap>
+	<Style id="inline2">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<Style id="inline3">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<Style id="inline4">
+		<LineStyle>
+			<color>ff0000ff</color>
+			<width>2</width>
+		</LineStyle>
+		<PolyStyle>
+			<fill>0</fill>
+		</PolyStyle>
+	</Style>
+	<Folder>
+		<name>Temporary Places</name>
+		<open>1</open>
+		<Placemark>
+			<name>Peabody_internal</name>
+			<styleUrl>#inline0</styleUrl>
+			<LineString>
+				<tessellate>1</tessellate>
+				<coordinates>
+					-65.33912588521996,80.00075306927876,0 -64.4015085571323,79.78010354365004,0 -64.67593700800521,79.70197678353593,0 -65.15846717908529,79.63819705581435,0 -65.31228824177255,79.66451805971975,0 -65.5541424062974,79.63751258852157,0 -66.34200042224704,79.54973084692033,0 -66.63004991015684,79.59448344908928,0 -67.26336747581421,79.60949518484748,0 -67.64234247596352,79.59931362575071,0 -67.73652075395064,79.62716430386752,0 -67.39840557854035,79.67880306802317,0 -66.88445470340231,79.785521772487,0 -66.4939335028225,79.8443158097766,0 -65.90037620875705,79.93182430077921,0 
+				</coordinates>
+			</LineString>
+		</Placemark>
+		<Placemark>
+			<name>Peabody_external</name>
+			<styleUrl>#inline1</styleUrl>
+			<LineString>
+				<tessellate>1</tessellate>
+				<coordinates>
+					-65.27104912706996,80.11482782044281,0 -64.33600356044825,79.94310656777331,0 -64.00436518001881,79.7873324590459,0 -64.45009025402646,79.66762508588263,0 -65.13774695538365,79.58151616959805,0 -66.37105365063913,79.50894425207916,0 -66.83425886419512,79.55178079905851,0 -67.74795108165711,79.55162773187566,0 -68.02935343505573,79.61028998260993,0 -67.98541025915061,79.66452613793865,0 -67.13529112466924,79.84136436359132,0 -66.07650089302929,80.00138235315862,0 
+				</coordinates>
+			</LineString>
+		</Placemark>
+	</Folder>
+</Document>
+</kml>
