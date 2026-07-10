@@ -1,0 +1,64 @@
+# fmesh2 project mirroring legacy fmesh's configure.yaml (the golden-capture
+# parity setup: all refinement stages enabled, the three region KMLs that ship
+# with fmesh imported to regions/*.geojson).
+#
+# Layer `mode: replace` reproduces fmesh semantics exactly — legacy fmesh
+# overwrites the field at each stage rather than keeping the finer value.
+#
+# Point `topo` at your RTopo/GEBCO NetCDF (this default expects the fmesh
+# checkout next to fmesh2, after running fmesh's download_data.sh).
+# The coastline source is Natural Earth 10m (auto-downloaded on first use);
+# legacy fmesh used an OSM-derived coastline, so coastal ramps differ in
+# detail but not in structure.
+
+name: fmesh-parity
+topo: ../../../fmesh/topo/RTopo-2.0.1_30sec_bos_fix_lowres_D3.nc
+
+grid:
+  n_lat: 360
+  n_lon: 720
+
+layers:
+  - type: base
+    resolution: 300
+
+  - type: mercator
+    mode: replace
+    resolution: 300
+    northern_boundary: 60
+    northern_lowest_resolution: 100
+    southern_boundary: -60
+    southern_lowest_resolution: 100
+
+  - type: coast
+    mode: replace
+    min_resolution: 50
+    max_distance: 300
+    min_length: 100
+    averaging: 50
+
+  - type: region
+    name: Baffin_Bay
+    mode: replace
+    path: regions/Baffin_Bay.geojson
+    resolution: 30
+
+  - type: region
+    name: Nares
+    mode: replace
+    path: regions/Nares.geojson
+    resolution: 25
+
+  - type: region
+    name: Peabody
+    mode: replace
+    path: regions/Peabody.geojson
+    resolution: 25
+
+  - type: bathy
+    mode: replace
+    min_resolution: 50
+    min_depth: 50
+    max_depth: 1500
+
+minimum_depth: 30
