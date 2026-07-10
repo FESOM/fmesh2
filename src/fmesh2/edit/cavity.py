@@ -131,7 +131,14 @@ def clean_selection(tri: np.ndarray, mask: np.ndarray, n_nodes: int) -> np.ndarr
 
 
 def select_elements(mesh: Mesh, ring_lonlat) -> np.ndarray:
-    """Boolean element mask of the cavity selected by a lon/lat polygon."""
+    """Boolean element mask of the cavity selected by a lon/lat polygon.
+
+    Elements are picked by centroid-in-polygon. A polygon drawn snugly
+    around individual node(s) — smaller than any element, so it contains
+    no centroid — falls back to selecting the enclosed nodes' full element
+    stars: the nodes become cavity-interior, so a remesh replaces (or,
+    with a coarser target, deletes) exactly those nodes.
+    """
     poly, lon0, lat0 = _polygon_plane(ring_lonlat)
     px, py = stereo_xy(mesh.lon, mesh.lat, lon0, lat0)
     shapely.prepare(poly)
@@ -139,7 +146,13 @@ def select_elements(mesh: Mesh, ring_lonlat) -> np.ndarray:
         poly, px[mesh.tri].mean(axis=1), py[mesh.tri].mean(axis=1)
     )
     if not mask.any():
-        raise CavityError("polygon selects no elements (is it over land?)")
+        inside = shapely.contains_xy(poly, px, py)
+        if inside.any():
+            mask = inside[mesh.tri].any(axis=1)
+    if not mask.any():
+        raise CavityError(
+            "polygon selects no elements and encloses no nodes (is it over land?)"
+        )
     return clean_selection(mesh.tri, mask, mesh.n_nodes)
 
 

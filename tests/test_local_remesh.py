@@ -237,3 +237,20 @@ def test_unreachable_target_is_reported(core2, refined, tmp_path):
     big = refined[2].report
     assert big["target_reached"] is True
     assert big["reachable_min_km"] == pytest.approx(big["target_km"])
+
+
+def test_single_node_delete_via_star_remesh(core2, tmp_path):
+    """Tight polygon around one node + coarser target = delete that node."""
+    from fmesh2.core.topology import SphereKDTree
+
+    _, idx = SphereKDTree(core2.lon, core2.lat).nearest_km(-35.0, 30.0)
+    n = int(np.atleast_1d(idx)[0])
+    lon0, lat0 = float(core2.lon[n]), float(core2.lat[n])
+    box = [(lon0 - 0.15, lat0 - 0.15), (lon0 + 0.15, lat0 - 0.15),
+           (lon0 + 0.15, lat0 + 0.15), (lon0 - 0.15, lat0 + 0.15)]
+    cav = extract_cavity(core2, box)
+    target = 1.5 * float(np.median(cav.edge_len_km))
+    res = remesh_cavity(core2, cav, target, cache_dir=tmp_path)
+    assert res.mapping[n] == -1  # the node is gone
+    assert res.report["watertight_seam"]
+    assert res.mesh.n_nodes == core2.n_nodes - 1 + res.report["n_new_interior_nodes"]

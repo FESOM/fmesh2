@@ -83,6 +83,13 @@ median diff 0.000%, element count +1.9%).
 
 Refinement and hand-editing work on any opened mesh — no project needed.
 
+**Deleting / replacing nodes** is a remesh, not an edit op: draw a tight
+refine polygon around the node(s) — a polygon smaller than an element
+automatically selects the enclosed nodes' surrounding elements — and
+remesh at (or coarser than) the local resolution. The enclosed nodes are
+interior to the cavity, so they are removed and the patch is rebuilt at
+jigsaw quality; `mapping.csv` lists the deleted ids as `-1`.
+
 **Deep refinements are iterative.** The boundary of a refined region stays
 bit-frozen, so the resolution must transition from the surrounding mesh to
 your target over a band of ~3× the local edge length. Inside a polygon

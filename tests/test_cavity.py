@@ -162,3 +162,22 @@ def test_order_loops_rejects_pinch():
     edges = np.array([[0, 1], [1, 2], [2, 0], [0, 3], [3, 4], [4, 0]])
     with pytest.raises(CavityError, match="boundary edges"):
         order_loops(edges)
+
+
+def test_single_node_polygon_selects_star(core2):
+    """A polygon smaller than any element falls back to the node's star.
+
+    This is the delete/replace-one-node UX: the enclosed node becomes
+    cavity-interior instead of erroring with "selects no elements".
+    """
+    from fmesh2.core.topology import SphereKDTree
+
+    _, idx = SphereKDTree(core2.lon, core2.lat).nearest_km(-35.0, 30.0)
+    n = int(np.atleast_1d(idx)[0])
+    lon0, lat0 = float(core2.lon[n]), float(core2.lat[n])
+    box = [(lon0 - 0.15, lat0 - 0.15), (lon0 + 0.15, lat0 - 0.15),
+           (lon0 + 0.15, lat0 + 0.15), (lon0 - 0.15, lat0 + 0.15)]
+    cav = extract_cavity(core2, box)
+    star = np.flatnonzero((core2.tri == n).any(axis=1))
+    assert set(np.flatnonzero(cav.elem_mask)) == set(star)
+    assert n not in cav.ring_nodes  # cavity-interior -> replaced by a remesh
