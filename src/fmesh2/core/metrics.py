@@ -27,11 +27,10 @@ def local_resolution_km(mesh: Mesh) -> np.ndarray:
     return (sums / np.maximum(cnts, 1)).astype(np.float64)
 
 
-def triangle_min_angle_deg(mesh: Mesh) -> np.ndarray:
+def min_angle_deg(xyz: np.ndarray, tri: np.ndarray) -> np.ndarray:
     """Smallest internal angle per element, computed from 3-D chords."""
-    xyz = sphere_xyz(mesh.lon, mesh.lat)
-    p = xyz[mesh.tri]  # (m, 3, 3)
-    angles = np.empty((mesh.n_tri, 3), np.float64)
+    p = xyz[tri]  # (m, 3, 3)
+    angles = np.empty((tri.shape[0], 3), np.float64)
     for i in range(3):
         a = p[:, (i + 1) % 3] - p[:, i]
         b = p[:, (i + 2) % 3] - p[:, i]
@@ -42,14 +41,23 @@ def triangle_min_angle_deg(mesh: Mesh) -> np.ndarray:
     return angles.min(axis=1)
 
 
-def triangle_signed_orientation(mesh: Mesh) -> np.ndarray:
+def signed_orientation(xyz: np.ndarray, tri: np.ndarray) -> np.ndarray:
     """Positive where the element is CCW seen from outside the sphere.
 
     Cross product of two element edges dotted with the outward normal at the
     element centroid; used to detect inverted elements after node moves.
     """
-    xyz = sphere_xyz(mesh.lon, mesh.lat)
-    p = xyz[mesh.tri]
+    p = xyz[tri]
     normal = p.mean(axis=1)
     cross = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
     return np.einsum("ij,ij->i", cross, normal)
+
+
+def triangle_min_angle_deg(mesh: Mesh) -> np.ndarray:
+    """`min_angle_deg` over the whole mesh."""
+    return min_angle_deg(sphere_xyz(mesh.lon, mesh.lat), mesh.tri)
+
+
+def triangle_signed_orientation(mesh: Mesh) -> np.ndarray:
+    """`signed_orientation` over the whole mesh."""
+    return signed_orientation(sphere_xyz(mesh.lon, mesh.lat), mesh.tri)

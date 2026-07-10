@@ -40,8 +40,10 @@ def read_fesom(mesh_dir: str | Path) -> Mesh:
     mesh_dir = Path(mesh_dir)
 
     n_nodes, nod = _read_table(mesh_dir / "nod2d.out", 4)
-    lon = nod.iloc[:, 1].to_numpy(dtype=np.float64)
-    lat = nod.iloc[:, 2].to_numpy(dtype=np.float64)
+    # copy=True: pandas copy-on-write hands out read-only views, but edit
+    # ops (M4) mutate positions and depths in place
+    lon = nod.iloc[:, 1].to_numpy(dtype=np.float64, copy=True)
+    lat = nod.iloc[:, 2].to_numpy(dtype=np.float64, copy=True)
     coast = nod.iloc[:, 3].to_numpy(dtype=np.int8)
 
     _, elem = _read_table(mesh_dir / "elem2d.out", 3)
@@ -62,10 +64,10 @@ def read_fesom(mesh_dir: str | Path) -> Mesh:
         nlev = int(vals[0])
         if 1 + nlev > len(vals):
             raise ValueError(f"{aux}: promises {nlev} levels, file too short")
-        levels = vals[1 : 1 + nlev]
+        levels = vals[1 : 1 + nlev].copy()
         node_vals = vals[1 + nlev :]
         if len(node_vals) >= n_nodes:
-            depth = node_vals[:n_nodes]
+            depth = node_vals[:n_nodes].copy()
 
     return Mesh(lon=lon, lat=lat, tri=tri, depth=depth, coast_flag=coast, levels=levels)
 
