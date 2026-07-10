@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FESOM2 mesh render spike</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; }
+  #c { width: 100%; height: 100%; display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 10px; color: #dce3f0;
+    font: 12px/1.5 ui-monospace, Menlo, monospace;
+    background: rgba(10, 13, 20, 0.75); border: 1px solid #2a3142;
+    border-radius: 8px; padding: 10px 12px; user-select: none; min-width: 250px;
+  }
+  #hud b { color: #8ab4ff; }
+  #fps { font-size: 20px; color: #7ce38b; }
+  .dim { color: #7d8590; }
+  button {
+    background: #1c2333; color: #dce3f0; border: 1px solid #39415a;
+    border-radius: 5px; padding: 2px 8px; margin: 2px 3px 0 0; font: 11px ui-monospace, monospace;
+    cursor: pointer;
+  }
+  button.on { background: #2b4a7f; border-color: #5a7fc0; }
+  #cbar {
+    position: fixed; bottom: 14px; left: 10px; color: #dce3f0;
+    font: 11px/1.4 ui-monospace, Menlo, monospace;
+    background: rgba(10, 13, 20, 0.75); border: 1px solid #2a3142;
+    border-radius: 8px; padding: 8px 12px; user-select: none;
+  }
+  #cbar canvas { display: block; width: 240px; height: 12px; border-radius: 3px; margin: 3px 0; }
+  #cblab { display: flex; justify-content: space-between; }
+  #load {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #dce3f0; font: 14px ui-monospace, monospace; background: #0b0e14;
+    flex-direction: column; gap: 12px;
+  }
+  #bar { width: 320px; height: 6px; background: #1c2333; border-radius: 3px; overflow: hidden; }
+  #bar > div { height: 100%; width: 0%; background: #5a9bff; transition: width 0.1s; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud" style="display:none">
+  <div id="fps">-- fps</div>
+  <div id="ms" class="dim">-- ms/frame</div>
+  <div id="counts"></div>
+  <div id="loadtime" class="dim"></div>
+  <div style="margin-top:6px">
+    <button id="bWire">[W]ireframe</button><button id="bField">[C]olor: resolution</button><button id="bProj">[G] view: globe</button><br>
+    <button id="bPoints">[P]oints</button><button id="bCoast" class="on">[L] coast</button><button id="bSpin">[R]otate</button><button id="bDens">[D] res</button>
+  </div>
+  <div class="dim" style="margin-top:4px" id="hint">drag: orbit · wheel: zoom</div>
+</div>
+<div id="cbar" style="display:none">
+  <div id="cbtitle"><b>resolution [km]</b></div>
+  <canvas id="cbc" width="256" height="1"></canvas>
+  <div id="cblab"><span id="cbmin"></span><span id="cbmax"></span></div>
+</div>
+<div id="load"><div id="loadmsg">loading mesh buffers…</div><div id="bar"><div></div></div></div>
+
+<script type="importmap">{ "imports": { "three": "./three.module.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from './OrbitControls.js';
+
+const MESH = new URLSearchParams(location.search).get('mesh') || 'ng5';
+
+async function fetchBuf(url, onBytes) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + ': ' + r.status);
+  const reader = r.body.getReader();
+  const chunks = []; let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); got += value.length; onBytes(value.length);
+  }
+  const out = new Uint8Array(got); let off = 0;
+  for (const ch of chunks) { out.set(ch, off); off += ch.length; }
+  return out.buffer;
+}
+
+const t0 = performance.now();
+const meta = await (await fetch(`${MESH}/meta.json`)).json();
+const totalBytes = Object.values(meta.bytes).reduce((a, b) => a + b, 0);
+let gotBytes = 0;
+const barEl = document.querySelector('#bar > div');
+const onBytes = n => { gotBytes += n; barEl.style.width = (100 * gotBytes / totalBytes).toFixed(1) + '%'; };
+
+const [pos, pos2, tri, edge, res, dep] = await Promise.all([
+  fetchBuf(`${MESH}/pos.bin`, onBytes), fetchBuf(`${MESH}/pos2.bin`, onBytes),
+  fetchBuf(`${MESH}/tri.bin`, onBytes), fetchBuf(`${MESH}/edge.bin`, onBytes),
+  fetchBuf(`${MESH}/res.bin`, onBytes), fetchBuf(`${MESH}/dep.bin`, onBytes),
+]);
+const tFetch = performance.now();
+
+// ---------- scene ----------
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'),
+  antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.001, 10);
+camera.position.set(0, 0.7, 2.4);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.12;
+controls.minDistance = 1.0003; controls.maxDistance = 5;
+controls.zoomSpeed = 1.4; controls.zoomToCursor = true;
+
+// dark inner sphere: occludes far side, makes land holes read as landmass
+const inner = new THREE.Mesh(new THREE.SphereGeometry(0.9985, 128, 64),
+  new THREE.MeshBasicMaterial({ color: 0x161a22 }));
+scene.add(inner);
+
+const posAttr = new THREE.BufferAttribute(new Float32Array(pos), 3);
+const pos2Attr = new THREE.BufferAttribute(new Float32Array(pos2), 3);
+
+const uniforms = {
+  uMorph: { value: 0 },
+  uField: { value: 0 },
+  uRange: { value: new THREE.Vector2(meta.res_range[0], meta.res_range[1]) },
+};
+const morphChunk = /* glsl */`
+  attribute vec3 position2;
+  uniform float uMorph;
+  vec3 morphed() { return mix(position, position2, uMorph); }`;
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', posAttr);
+geo.setAttribute('position2', pos2Attr);
+geo.setAttribute('res', new THREE.BufferAttribute(new Float32Array(res), 1));
+geo.setAttribute('dep', new THREE.BufferAttribute(new Float32Array(dep), 1));
+geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tri), 1));
+
+const fillMat = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader: /* glsl */`
+    ${'' /* morph + scalar selection */}
+    attribute vec3 position2; attribute float res; attribute float dep;
+    uniform float uMorph; uniform int uField; uniform vec2 uRange;
+    varying float vT; varying vec3 vN;
+    void main() {
+      float s = uField == 0 ? res : dep;
+      vT = clamp((s - uRange.x) / (uRange.y - uRange.x), 0.0, 1.0);
+      vN = position;  // unit sphere: normal == position
+      vec3 p = mix(position, position2, uMorph);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vT; varying vec3 vN;
+    uniform float uMorph;
+    vec3 viridis(float t) {
+      const vec3 c0 = vec3(0.2777, 0.0054, 0.3340), c1 = vec3(0.1050, 1.4046, 1.3845),
+        c2 = vec3(-0.3308, 0.2148, 0.0950), c3 = vec3(-4.6342, -5.7991, -19.3324),
+        c4 = vec3(6.2282, 14.1799, 56.6905), c5 = vec3(4.7763, -13.7451, -65.3530),
+        c6 = vec3(-5.4354, 4.6456, 26.3125);
+      return c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*(c5 + t*c6)))));
+    }
+    void main() {
+      float sphereShade = 0.72 + 0.28 * max(dot(normalize(vN), normalize(cameraPosition)), 0.0);
+      float shade = mix(sphereShade, 1.0, uMorph);
+      gl_FragColor = vec4(viridis(vT) * shade, 1.0);
+    }`,
+  side: THREE.FrontSide,
+  polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 1.5,
+});
+const mesh = new THREE.Mesh(geo, fillMat);
+mesh.frustumCulled = false;
+scene.add(mesh);
+
+const edgeGeo = new THREE.BufferGeometry();
+edgeGeo.setAttribute('position', posAttr);
+edgeGeo.setAttribute('position2', pos2Attr);
+edgeGeo.setIndex(new THREE.BufferAttribute(new Uint32Array(edge), 1));
+const wire = new THREE.LineSegments(edgeGeo, new THREE.ShaderMaterial({
+  uniforms: { uMorph: uniforms.uMorph },
+  vertexShader: /* glsl */`
+    attribute vec3 position2; uniform float uMorph;
+    void main() {
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, position2, uMorph), 1.0);
+    }`,
+  fragmentShader: `void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 0.42); }`,
+  transparent: true,
+}));
+wire.frustumCulled = false; wire.visible = false;
+scene.add(wire);
+
+const ptsGeo = new THREE.BufferGeometry();
+ptsGeo.setAttribute('position', posAttr);
+ptsGeo.setAttribute('position2', pos2Attr);
+const pts = new THREE.Points(ptsGeo, new THREE.ShaderMaterial({
+  uniforms: { uMorph: uniforms.uMorph },
+  vertexShader: /* glsl */`
+    attribute vec3 position2; uniform float uMorph;
+    void main() {
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, position2, uMorph), 1.0);
+      gl_PointSize = 2.0;
+    }`,
+  fragmentShader: `void main() { gl_FragColor = vec4(1.0, 1.0, 1.0, 0.8); }`,
+  transparent: true,
+}));
+pts.frustumCulled = false; pts.visible = false;
+scene.add(pts);
+
+// coastline overlay (Natural Earth 10m), optional
+let coast = null;
+try {
+  const [cp, cp2] = await Promise.all([
+    fetchBuf('coast_pos.bin', () => {}), fetchBuf('coast_pos2.bin', () => {})]);
+  const cg = new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(cp), 3));
+  cg.setAttribute('position2', new THREE.BufferAttribute(new Float32Array(cp2), 3));
+  coast = new THREE.LineSegments(cg, new THREE.ShaderMaterial({
+    uniforms: { uMorph: uniforms.uMorph },
+    vertexShader: /* glsl */`
+      attribute vec3 position2; uniform float uMorph;
+      void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, position2, uMorph), 1.0);
+      }`,
+    fragmentShader: `void main() { gl_FragColor = vec4(1.0, 0.66, 0.40, 0.9); }`,
+    transparent: true,
+  }));
+  coast.frustumCulled = false; coast.renderOrder = 3;
+  scene.add(coast);
+} catch (e) { console.warn('coastline buffers not found', e); }
+
+// ---------- colorbar ----------
+function viridisJS(t) {
+  const C = [
+    [0.2777, 0.0054, 0.3340], [0.1050, 1.4046, 1.3845], [-0.3308, 0.2148, 0.0950],
+    [-4.6342, -5.7991, -19.3324], [6.2282, 14.1799, 56.6905],
+    [4.7763, -13.7451, -65.3530], [-5.4354, 4.6456, 26.3125]];
+  const out = [0, 0, 0];
+  for (let k = 6; k >= 0; k--) for (let i = 0; i < 3; i++) out[i] = out[i] * t + C[k][i];
+  return out.map(v => Math.max(0, Math.min(255, Math.round(v * 255))));
+}
+{
+  const ctx = document.getElementById('cbc').getContext('2d');
+  const img = ctx.createImageData(256, 1);
+  for (let x = 0; x < 256; x++) {
+    const [r, g, b] = viridisJS(x / 255);
+    img.data.set([r, g, b, 255], x * 4);
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function updateColorbar(field) {
+  const rg = field ? meta.dep_range : meta.res_range;
+  document.getElementById('cbtitle').innerHTML =
+    '<b>' + (field ? 'depth [m]' : 'resolution [km]') + '</b>';
+  document.getElementById('cbmin').textContent = rg[0].toFixed(field ? 0 : 1);
+  document.getElementById('cbmax').textContent = rg[1].toFixed(field ? 0 : 1) + (field ? '' : ' km');
+}
+
+// ---------- HUD / controls ----------
+const $ = id => document.getElementById(id);
+$('load').style.display = 'none'; $('hud').style.display = 'block'; $('cbar').style.display = 'block';
+$('counts').innerHTML = `<b>${meta.name}</b> &nbsp; ${(meta.nodes/1e6).toFixed(2)}M nodes · ` +
+  `${(meta.triangles/1e6).toFixed(2)}M tri · ${(meta.edges/1e6).toFixed(2)}M edges<br>` +
+  `<span class="dim">${(totalBytes/1e6).toFixed(0)} MB buffers</span>`;
+$('loadtime').textContent = `fetch ${((tFetch - t0)/1e3).toFixed(1)}s`;
+updateColorbar(0);
+
+let field = 0, mode = 0, morphTarget = 0;
+function setMode(m) {
+  mode = m; morphTarget = m;
+  controls.enableRotate = m === 0;
+  controls.mouseButtons.LEFT = m === 0 ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
+  controls.screenSpacePanning = true;
+  controls.minDistance = m === 0 ? 1.0003 : 0.0015;
+  controls.maxDistance = m === 0 ? 5 : 7;
+  controls.target.set(0, 0, 0);
+  camera.position.set(0, m === 0 ? 0.7 : 0, m === 0 ? 2.4 : 3.2);
+  if (m === 1) { controls.autoRotate = false; $('bSpin').classList.remove('on'); }
+  $('bProj').textContent = '[G] view: ' + (m ? 'map' : 'globe');
+  $('hint').textContent = m ? 'drag: pan · wheel: zoom' : 'drag: orbit · wheel: zoom';
+}
+const actions = {
+  w: () => { wire.visible = !wire.visible; $('bWire').classList.toggle('on', wire.visible); },
+  c: () => {
+    field = 1 - field; uniforms.uField.value = field;
+    const rg = field ? meta.dep_range : meta.res_range;
+    uniforms.uRange.value.set(rg[0], rg[1]);
+    $('bField').textContent = '[C]olor: ' + (field ? 'depth' : 'resolution');
+    updateColorbar(field);
+  },
+  p: () => { pts.visible = !pts.visible; $('bPoints').classList.toggle('on', pts.visible); },
+  l: () => { if (coast) { coast.visible = !coast.visible; $('bCoast').classList.toggle('on', coast.visible); } },
+  r: () => {
+    if (mode === 1) return;
+    controls.autoRotate = !controls.autoRotate; $('bSpin').classList.toggle('on', controls.autoRotate);
+  },
+  g: () => setMode(mode ? 0 : 1),
+  d: () => {
+    const lo = renderer.getPixelRatio() > 1;
+    renderer.setPixelRatio(lo ? 1 : Math.min(devicePixelRatio, 2));
+    $('bDens').textContent = `[D] res ×${renderer.getPixelRatio()}`;
+  },
+};
+addEventListener('keydown', e => actions[e.key.toLowerCase()]?.());
+$('bWire').onclick = actions.w; $('bField').onclick = actions.c;
+$('bPoints').onclick = actions.p; $('bSpin').onclick = actions.r;
+$('bProj').onclick = actions.g; $('bDens').onclick = actions.d;
+$('bCoast').onclick = actions.l;
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+// ---------- render loop with FPS meter ----------
+const times = [];
+let lastHud = 0, announced = false, prevT = 0;
+renderer.setAnimationLoop(t => {
+  if (!announced) {
+    announced = true;
+    $('loadtime').textContent += ` · first frame ${((performance.now() - t0)/1e3).toFixed(1)}s`;
+  }
+  const dt = prevT ? (t - prevT) / 1000 : 0.016; prevT = t;
+
+  // animate globe <-> map morph
+  const mv = uniforms.uMorph.value;
+  if (mv !== morphTarget) {
+    const next = mv + (morphTarget - mv) * Math.min(1, dt * 5);
+    uniforms.uMorph.value = Math.abs(next - morphTarget) < 0.002 ? morphTarget : next;
+  }
+  inner.visible = uniforms.uMorph.value < 0.25;
+
+  // altitude-scaled controls: smooth both at global view and 2 km above the mesh
+  const d = mode === 0
+    ? Math.max(camera.position.length() - 1, 1e-4)
+    : Math.max(controls.getDistance(), 1e-3);
+  controls.rotateSpeed = Math.min(1, Math.max(0.02, d * 0.9));
+  camera.near = Math.max(1e-5, d * 0.03); camera.far = d + 6;
+  camera.updateProjectionMatrix();
+  controls.update();
+  renderer.render(scene, camera);
+
+  times.push(t);
+  while (times.length > 90) times.shift();
+  if (t - lastHud > 250 && times.length > 10) {
+    const fdt = (times[times.length-1] - times[0]) / (times.length - 1);
+    $('fps').textContent = (1000/fdt).toFixed(0) + ' fps';
+    $('ms').textContent = fdt.toFixed(1) + ' ms/frame';
+    lastHud = t;
+  }
+});
+</script>
+</body>
+</html>
