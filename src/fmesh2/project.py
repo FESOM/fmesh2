@@ -170,6 +170,9 @@ class Project(BaseModel):
 
     name: str = Field(min_length=1)
     topo: str | None = Field(default=None, description="topography NetCDF path")
+    topo_var: str | None = Field(
+        default=None, description="elevation variable name, if auto-detection fails"
+    )
     grid: GridSettings = Field(default_factory=GridSettings)
     layers: list[Layer] = Field(default_factory=list)
     levels: list[float] = Field(default_factory=lambda: list(DEFAULT_LEVELS))

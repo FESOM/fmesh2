@@ -18,6 +18,7 @@ myproject/
 ```yaml
 name: my-mesh                 # required, display name
 topo: topo/RTopo-2.0.1.nc     # topography NetCDF (bathy layer, land cut, node depths)
+topo_var: topo                # optional: elevation variable, if auto-detection fails
 grid:                         # hfun lat/lon grid density, fmesh convention:
   n_lat: 360                  #   n_lat intervals -> n_lat+1 latitudes (-90..90)
   n_lon: 720                  #   omit both to auto-suggest from the finest layer
