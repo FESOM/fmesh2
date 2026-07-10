@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fmesh2"
+description = "Visual jigsaw-based mesh generator for FESOM2"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dynamic = ["version"]
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "xarray",
+    "netcdf4",
+    "shapely",
+    "pyproj",
+    "pyyaml",
+    "fastapi",
+    "pydantic>=2",
+    "uvicorn",
+    "jigsawpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-timeout", "httpx"]
+
+[project.scripts]
+fmesh2 = "fmesh2.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "fmesh2._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"fmesh2.server" = ["static/*", "static/*/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 600
+addopts = "-q"

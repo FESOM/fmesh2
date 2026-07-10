@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+node_modules/
+src/fmesh2/server/static/
+frontend/playwright-report/
+frontend/test-results/
+.DS_Store
