@@ -16,6 +16,8 @@ export interface MeshBuffers {
   edge: Uint32Array;
   res: Float32Array;
   dep: Float32Array;
+  /** Source node id of each duplicated dateline-seam vertex (vertex nodes + i). */
+  dupsrc: Uint32Array;
 }
 
 export interface CoastBuffers {

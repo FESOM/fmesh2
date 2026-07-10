@@ -71,6 +71,28 @@ export function polygonGeoJSON(vertices: LonLat[]): object {
   };
 }
 
+/** East/north displacement (km) from `anchor` to `current` in the tangent
+ * plane at the anchor — the drag vector applied to every selected node. */
+export function dragDeltaKm(
+  anchor: LonLat,
+  current: LonLat,
+): { eastKm: number; northKm: number } {
+  const dLon = wrapLon(current.lon - anchor.lon);
+  return {
+    eastKm: dLon * D2R * EARTH_RADIUS_KM * Math.cos(anchor.lat * D2R),
+    northKm: (current.lat - anchor.lat) * D2R * EARTH_RADIUS_KM,
+  };
+}
+
+/** Apply a tangent-plane displacement to a node: the east component is
+ * converted to longitude at the node's own latitude, so the on-sphere
+ * displacement magnitude is preserved wherever the node sits. */
+export function applyDragKm(p: LonLat, eastKm: number, northKm: number): LonLat {
+  const lat = Math.min(90, Math.max(-90, p.lat + (northKm / EARTH_RADIUS_KM) / D2R));
+  const cos = Math.max(Math.cos(p.lat * D2R), 1e-6); // pole guard
+  return { lon: wrapLon(p.lon + (eastKm / (EARTH_RADIUS_KM * cos)) / D2R), lat };
+}
+
 /** Keep a drawn ring on one side of the dateline seam: unwrap each vertex
  * next to its predecessor (matches how the region layer reads rings). */
 export function unwrapRing(vertices: LonLat[]): LonLat[] {

@@ -8,6 +8,9 @@ Layout (validated by the 2026-07-10 render spike):
 - edge: uint32 (e, 2) unique undirected edges of the remapped triangles
 - res/dep: float32 per vertex; computed on the TRUE topology before seam
         duplication, then copied to duplicates.
+- dupsrc: uint32 (verts - nodes,) source node id of each duplicated seam
+        vertex (vertex n + i duplicates node dupsrc[i]) — edit mode (M4)
+        uses it to keep duplicates in sync during live node drags.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from fmesh2.core.mesh import Mesh
 from fmesh2.core.metrics import local_resolution_km
 from fmesh2.core.topology import unique_edges
 
-BUFFER_NAMES = ("pos", "pos2", "tri", "edge", "res", "dep")
+BUFFER_NAMES = ("pos", "pos2", "tri", "edge", "res", "dep", "dupsrc")
 
 
 @dataclass
@@ -34,6 +37,7 @@ class ViewerBuffers:
     edge: np.ndarray
     res: np.ndarray
     dep: np.ndarray
+    dupsrc: np.ndarray
     meta: dict = field(default_factory=dict)
 
     def buffer(self, name: str) -> np.ndarray:
@@ -111,6 +115,7 @@ def build_buffers(mesh: Mesh, name: str = "mesh") -> ViewerBuffers:
         edge=edge,
         res=res_v.astype(np.float32),
         dep=dep_v.astype(np.float32),
+        dupsrc=dup_src.astype(np.uint32),
         meta=meta,
     )
     meta["bytes"] = {b: int(buffers.buffer(b).nbytes) for b in BUFFER_NAMES}
@@ -119,6 +124,7 @@ def build_buffers(mesh: Mesh, name: str = "mesh") -> ViewerBuffers:
 
 def _cache_key(mesh_dir: Path) -> str:
     h = hashlib.sha1()
+    h.update(b"format:v2;")  # v2: added the dupsrc buffer
     for fname in ("nod2d.out", "elem2d.out", "aux3d.out"):
         p = mesh_dir / fname
         if p.exists():
@@ -128,8 +134,10 @@ def _cache_key(mesh_dir: Path) -> str:
 
 
 _DTYPES = {"pos": np.float32, "pos2": np.float32, "tri": np.uint32,
-           "edge": np.uint32, "res": np.float32, "dep": np.float32}
-_SHAPES = {"pos": 3, "pos2": 3, "tri": 3, "edge": 2, "res": 1, "dep": 1}
+           "edge": np.uint32, "res": np.float32, "dep": np.float32,
+           "dupsrc": np.uint32}
+_SHAPES = {"pos": 3, "pos2": 3, "tri": 3, "edge": 2, "res": 1, "dep": 1,
+           "dupsrc": 1}
 
 
 def load_or_build(mesh_dir: str | Path, cache_dir: str | Path | None = None,
@@ -141,7 +149,7 @@ def load_or_build(mesh_dir: str | Path, cache_dir: str | Path | None = None,
     if cache_dir is not None:
         cache = Path(cache_dir) / _cache_key(mesh_dir)
         meta_file = cache / "meta.json"
-        if meta_file.exists():
+        if meta_file.exists() and all((cache / f"{b}.bin").exists() for b in BUFFER_NAMES):
             meta = json.loads(meta_file.read_text())
             arrays = {}
             for b in BUFFER_NAMES:

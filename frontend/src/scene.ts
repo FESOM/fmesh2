@@ -7,6 +7,7 @@ import { coastLayer } from './layers/coastLayer';
 import { HfunOverlay } from './layers/hfunOverlay';
 import { MeshLayer } from './layers/meshLayer';
 import { DrawMode } from './modes/draw';
+import { EditMode } from './modes/edit';
 import { RefineMode } from './modes/refine';
 import { initLayerPanel } from './panels/layers';
 import { PickingPass } from './picking';
@@ -91,7 +92,7 @@ export function startViewer(input: ViewerInput): void {
     downY = e.clientY;
   });
   renderer.domElement.addEventListener('click', (e) => {
-    if (draw.active || refine.active) return; // polygon modes own clicks
+    if (draw.active || refine.active || edit.active) return; // modes own clicks
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return; // was a drag
     void inspector.pin(picking.pick(renderer, camera, e.clientX, e.clientY));
   });
@@ -138,8 +139,10 @@ export function startViewer(input: ViewerInput): void {
   let slotA: Slot = { id: input.id, meta, buffers };
   let slotB: Slot | null = null;
   let showing: 'A' | 'B' = 'A';
+  let currentBuffers = buffers;
 
   function installMesh(id: string, m: MeshMeta, b: MeshBuffers): void {
+    edit.onMeshInstalled(); // edit sessions/selections are per mesh
     const wire = mesh.wire.visible;
     const pts = mesh.points.visible;
     const field = mesh.field;
@@ -151,6 +154,7 @@ export function startViewer(input: ViewerInput): void {
     mesh.points.visible = pts;
     mesh.setField(field);
     scene.add(mesh.group);
+    currentBuffers = b;
     picking = new PickingPass(
       mesh.fill.geometry.getAttribute('position') as THREE.BufferAttribute,
       mesh.fill.geometry.getAttribute('position2') as THREE.BufferAttribute,
@@ -189,6 +193,23 @@ export function startViewer(input: ViewerInput): void {
       refine.setSlots(slotA, slotB, showing);
     },
     onSwapRequest: () => swapAB(),
+    onHint: (text) => {
+      $('hint').textContent = text ?? controlsConfig(mode).hint;
+    },
+  });
+
+  // ---------- edit mode (M4) ----------
+  const edit: EditMode = new EditMode({
+    canvas: renderer.domElement,
+    camera,
+    scene,
+    morph,
+    getMode: () => mode,
+    renderer,
+    getPicking: () => picking,
+    getLayer: () => mesh,
+    getBuffers: () => currentBuffers,
+    currentMeshId: () => (showing === 'A' ? slotA : slotB!).id,
     onHint: (text) => {
       $('hint').textContent = text ?? controlsConfig(mode).hint;
     },
@@ -279,13 +300,17 @@ export function startViewer(input: ViewerInput): void {
       else showColorbar();
     },
     x: () => {
-      if (refine.active) return; // one polygon mode at a time
+      if (refine.active || edit.active) return; // one interaction mode at a time
       if (!panel.hasProject() && !draw.active) return; // needs an open project
       draw.toggle();
     },
     v: () => {
-      if (draw.active) return; // one polygon mode at a time
+      if (draw.active || edit.active) return; // one interaction mode at a time
       refine.toggle();
+    },
+    e: () => {
+      if (draw.active || refine.active) return;
+      edit.toggle();
     },
     b: () => swapAB(),
   };

@@ -22,6 +22,7 @@ class AppState:
     coastline_source: Path | None = None
     meshes: dict[str, MeshEntry] = field(default_factory=dict)
     project: object | None = None  # active fmesh2.project.Project
+    edit_sessions: dict = field(default_factory=dict)  # mesh id -> EditSession
     _counter: int = 0
     _coast: dict[str, np.ndarray] | None = None
 

@@ -59,8 +59,8 @@ export async function loadMeshBuffers(
   onBytes: (n: number) => void = () => {},
 ): Promise<MeshBuffers> {
   const get = (name: string) => fetchBuffer(`/api/mesh/${id}/buffer/${name}`, onBytes);
-  const [pos, pos2, tri, edge, res, dep] = await Promise.all(
-    ['pos', 'pos2', 'tri', 'edge', 'res', 'dep'].map(get),
+  const [pos, pos2, tri, edge, res, dep, dupsrc] = await Promise.all(
+    ['pos', 'pos2', 'tri', 'edge', 'res', 'dep', 'dupsrc'].map(get),
   );
   return {
     pos: new Float32Array(pos),
@@ -69,6 +69,7 @@ export async function loadMeshBuffers(
     edge: new Uint32Array(edge),
     res: new Float32Array(res),
     dep: new Float32Array(dep),
+    dupsrc: new Uint32Array(dupsrc),
   };
 }
 
@@ -191,3 +192,105 @@ export async function fetchHfun(): Promise<HfunGridData> {
     max: Number(r.headers.get('x-hfun-max')),
   };
 }
+
+// ---------------------------------------------------------- editing (M4)
+
+export interface EditJournalState {
+  can_undo: boolean;
+  can_redo: boolean;
+  n_ops: number;
+}
+
+/** Positions to write into the GPU buffers (vertex indices incl. dateline
+ * duplicates; server applies all buffer conventions). */
+export interface VertexUpdate {
+  verts: number[];
+  pos: [number, number, number][];
+  pos2: [number, number, number][];
+  dep: number[] | null;
+}
+
+export interface EditOpReport {
+  n_nodes: number;
+  n_elements: number;
+  max_displacement_km: number;
+  min_angle_before_deg: number | null;
+  min_angle_after_deg: number | null;
+  [key: string]: unknown;
+}
+
+export interface EditOpResult {
+  report: EditOpReport;
+  update: VertexUpdate;
+  journal: EditJournalState;
+}
+
+/** A 422 from move/smooth: the op would invert these elements. */
+export class EditRejected extends Error {
+  constructor(
+    message: string,
+    readonly elementIds: number[],
+  ) {
+    super(message);
+  }
+}
+
+async function postEdit<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, jsonInit('POST', body));
+  if (r.ok) return r.json() as Promise<T>;
+  let detail: unknown = r.statusText;
+  try {
+    detail = (await r.json()).detail ?? detail;
+  } catch {
+    /* not json */
+  }
+  if (typeof detail === 'object' && detail !== null && 'message' in detail) {
+    const d = detail as { message: string; element_ids?: number[] };
+    throw new EditRejected(d.message, d.element_ids ?? []);
+  }
+  throw new Error(`${url}: ${r.status} ${String(detail)}`);
+}
+
+export const editOpen = (meshId: string, topo?: string) =>
+  postEdit<{ n_nodes: number; has_depth: boolean; journal: EditJournalState }>(
+    `/api/mesh/${meshId}/edit/open`,
+    { topo: topo ?? null },
+  );
+
+export const editSelectLasso = (meshId: string, lasso: [number, number][]) =>
+  postEdit<{ ids: number[] }>(`/api/mesh/${meshId}/edit/select`, { lasso });
+
+export const editSelectBrush = (meshId: string, center: [number, number], radiusKm: number) =>
+  postEdit<{ ids: number[] }>(`/api/mesh/${meshId}/edit/select`, {
+    center,
+    radius_km: radiusKm,
+  });
+
+export const editMove = (meshId: string, ids: number[], lonlat: [number, number][]) =>
+  postEdit<EditOpResult>(`/api/mesh/${meshId}/edit/move`, { ids, lonlat });
+
+export const editSmooth = (
+  meshId: string,
+  ids: number[],
+  iterations: number,
+  strength: number,
+) =>
+  postEdit<EditOpResult>(`/api/mesh/${meshId}/edit/smooth`, { ids, iterations, strength });
+
+export const editUndo = (meshId: string) =>
+  postEdit<{ update: VertexUpdate | null; journal: EditJournalState }>(
+    `/api/mesh/${meshId}/edit/undo`,
+    {},
+  );
+
+export const editRedo = (meshId: string) =>
+  postEdit<{ update: VertexUpdate | null; journal: EditJournalState }>(
+    `/api/mesh/${meshId}/edit/redo`,
+    {},
+  );
+
+export const editSave = (meshId: string, outDir: string) =>
+  postEdit<{ out_dir: string; mesh_id: string; hash: string }>(
+    `/api/mesh/${meshId}/edit/save`,
+    { out_dir: outDir },
+  );

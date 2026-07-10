@@ -19,6 +19,8 @@ def test_tiny_dateline_duplication(tiny_mesh):
     assert (tl.max(axis=1) - tl.min(axis=1)).max() < 180.0
     # duplicated vertex coincides with its source on the sphere
     np.testing.assert_allclose(b.pos[6], b.pos[4], atol=1e-7)
+    # dupsrc maps the duplicate back to its source node
+    np.testing.assert_array_equal(b.dupsrc, [4])
 
 
 def test_core2_counts_match_spike(core2_dir):
@@ -31,6 +33,8 @@ def test_core2_counts_match_spike(core2_dir):
     assert b.meta["triangles"] == 244659
     assert b.tri.dtype == np.uint32 and b.pos.dtype == np.float32
     assert b.meta["res_range"][0] > 10
+    assert b.dupsrc.shape == (377,) and b.dupsrc.dtype == np.uint32
+    assert (b.dupsrc < b.meta["nodes"]).all()
 
 
 def test_cache_roundtrip(tiny_mesh, tmp_path):
@@ -41,7 +45,7 @@ def test_cache_roundtrip(tiny_mesh, tmp_path):
 
     b1 = load_or_build(mesh_dir, cache_dir=tmp_path / "cache")
     b2 = load_or_build(mesh_dir, cache_dir=tmp_path / "cache")  # cache hit
-    for name in ("pos", "pos2", "tri", "edge", "res", "dep"):
+    for name in ("pos", "pos2", "tri", "edge", "res", "dep", "dupsrc"):
         np.testing.assert_array_equal(b1.buffer(name), b2.buffer(name))
     assert b1.meta == b2.meta
     assert (tmp_path / "cache").exists()

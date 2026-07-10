@@ -34,12 +34,14 @@ def test_open_and_meta(client, core2_dir):
 def test_buffer_bytes(client, core2_dir):
     mesh_id = client.post("/api/meshes/open", json={"path": str(core2_dir)}).json()["id"]
     meta = client.get(f"/api/mesh/{mesh_id}/meta").json()
-    for name, itemsize, width in [("pos", 4, 3), ("tri", 4, 3), ("edge", 4, 2), ("res", 4, 1)]:
+    for name, itemsize, width in [("pos", 4, 3), ("tri", 4, 3), ("edge", 4, 2),
+                                  ("res", 4, 1), ("dupsrc", 4, 1)]:
         r = client.get(f"/api/mesh/{mesh_id}/buffer/{name}")
         assert r.status_code == 200
         assert r.headers["content-type"] == "application/octet-stream"
         count = {"pos": meta["verts"], "res": meta["verts"],
-                 "tri": meta["triangles"], "edge": meta["edges"]}[name]
+                 "tri": meta["triangles"], "edge": meta["edges"],
+                 "dupsrc": meta["verts"] - meta["nodes"]}[name]
         assert len(r.content) == count * itemsize * width
 
     pos = np.frombuffer(
@@ -278,3 +280,138 @@ def test_refine_validation_and_failure(client, core2_dir, tmp_path):
     snap = _wait_job(client, r.json()["job_id"])
     assert snap["status"] == "error"
     assert "no elements" in snap["error"]
+
+
+# ------------------------------------------------------------ node editing (M4)
+
+
+def _open_edit(client, core2_dir) -> str:
+    mesh_id = client.post("/api/meshes/open", json={"path": str(core2_dir)}).json()["id"]
+    r = client.post(f"/api/mesh/{mesh_id}/edit/open", json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["n_nodes"] == 126858
+    assert body["journal"] == {"can_undo": False, "can_redo": False, "n_ops": 0}
+    return mesh_id
+
+
+def test_edit_requires_open_session(client, core2_dir):
+    mesh_id = client.post("/api/meshes/open", json={"path": str(core2_dir)}).json()["id"]
+    r = client.post(f"/api/mesh/{mesh_id}/edit/select", json={"center": [0, 0], "radius_km": 100})
+    assert r.status_code == 404 and "edit/open" in r.json()["detail"]
+    assert client.post("/api/mesh/nope/edit/open", json={}).status_code == 404
+
+
+def test_edit_select_lasso_and_brush(client, core2_dir):
+    from fmesh2.core.io_fesom import read_fesom
+    from fmesh2.core.topology import SphereKDTree
+
+    mesh_id = _open_edit(client, core2_dir)
+    mesh = read_fesom(core2_dir)
+
+    # lasso: mid-Atlantic square; every returned node lies inside its bbox
+    ring = [[-40, 25], [-30, 25], [-30, 33], [-40, 33]]
+    r = client.post(f"/api/mesh/{mesh_id}/edit/select", json={"lasso": ring})
+    assert r.status_code == 200
+    ids = r.json()["ids"]
+    assert len(ids) > 10
+    assert all(-40 <= mesh.lon[i] <= -30 and 25 <= mesh.lat[i] <= 33 for i in ids)
+
+    # brush: matches a direct KDTree radius query
+    r = client.post(
+        f"/api/mesh/{mesh_id}/edit/select",
+        json={"center": [-35, 29], "radius_km": 300},
+    )
+    expect = sorted(SphereKDTree(mesh.lon, mesh.lat).query_radius(-35.0, 29.0, 300.0)[0])
+    assert r.json()["ids"] == [int(i) for i in expect]
+
+    # validation: nothing given / short lasso
+    assert client.post(f"/api/mesh/{mesh_id}/edit/select", json={}).status_code == 422
+    assert (
+        client.post(
+            f"/api/mesh/{mesh_id}/edit/select", json={"lasso": [[0, 0], [1, 1]]}
+        ).status_code
+        == 422
+    )
+
+
+def test_edit_move_undo_redo_save_api(client, core2_dir, tmp_path):
+    from fmesh2.core.io_fesom import read_fesom, write_fesom
+    from fmesh2.edit.journal import mesh_hash
+
+    mesh_id = _open_edit(client, core2_dir)
+    pristine = read_fesom(core2_dir)
+    ids = client.post(
+        f"/api/mesh/{mesh_id}/edit/select",
+        json={"center": [-35, 29], "radius_km": 200},
+    ).json()["ids"][:2]
+
+    target = [[float(pristine.lon[i]) + 0.01, float(pristine.lat[i]) - 0.01] for i in ids]
+    r = client.post(f"/api/mesh/{mesh_id}/edit/move", json={"ids": ids, "lonlat": target})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["journal"]["can_undo"] and body["journal"]["n_ops"] == 1
+    assert body["report"]["n_nodes"] == 2
+    upd = body["update"]
+    assert upd["verts"][: len(ids)] == ids  # duplicates (if any) appended after
+    assert upd["pos2"][0][0] == pytest.approx(np.deg2rad(target[0][0]))
+    assert len(upd["dep"]) == len(upd["verts"])
+
+    # undo restores the original positions in the returned buffer update
+    r = client.post(f"/api/mesh/{mesh_id}/edit/undo")
+    upd = r.json()["update"]
+    assert r.json()["journal"] == {"can_undo": False, "can_redo": True, "n_ops": 0}
+    assert upd["pos2"][0][0] == pytest.approx(np.deg2rad(pristine.lon[ids[0]]), abs=1e-12)
+
+    # nothing left to undo
+    r = client.post(f"/api/mesh/{mesh_id}/edit/undo")
+    assert r.json()["update"] is None
+
+    # redo re-applies, then save-as writes triplet + journal and registers
+    client.post(f"/api/mesh/{mesh_id}/edit/redo")
+    out = tmp_path / "edited"
+    r = client.post(f"/api/mesh/{mesh_id}/edit/save", json={"out_dir": str(out)})
+    assert r.status_code == 200, r.text
+    saved = read_fesom(out)
+    assert saved.lon[ids[0]] == target[0][0]
+    assert (out / "edits.jsonl").exists()
+    assert mesh_hash(saved) == r.json()["hash"]
+    assert any(m["id"] == r.json()["mesh_id"] for m in client.get("/api/meshes").json())
+
+    # journal replay on the pristine mesh reproduces the saved hash
+    from fmesh2.edit.journal import apply_journal
+
+    replayed = apply_journal(pristine, out / "edits.jsonl")
+    assert mesh_hash(replayed) == r.json()["hash"]
+
+    # saving over the source mesh is refused
+    r = client.post(f"/api/mesh/{mesh_id}/edit/save", json={"out_dir": str(core2_dir)})
+    assert r.status_code == 400 and "refusing" in r.json()["detail"]
+
+
+def test_edit_move_inversion_and_smooth_api(client, core2_dir):
+    mesh_id = _open_edit(client, core2_dir)
+    ids = client.post(
+        f"/api/mesh/{mesh_id}/edit/select",
+        json={"center": [-35, 29], "radius_km": 300},
+    ).json()["ids"]
+
+    # dragging one node across its neighbours is rejected with element ids
+    r = client.post(
+        f"/api/mesh/{mesh_id}/edit/move",
+        json={"ids": ids[:1], "lonlat": [[-25.0, 29.0]]},
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "invert" in detail["message"] and len(detail["element_ids"]) > 0
+
+    # smoothing the patch through the API
+    r = client.post(
+        f"/api/mesh/{mesh_id}/edit/smooth",
+        json={"ids": ids, "iterations": 2, "strength": 0.5},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["report"]["n_nodes"] > 0
+    assert len(body["update"]["verts"]) >= body["report"]["n_nodes"]
+    assert body["journal"]["n_ops"] == 1

@@ -22,6 +22,31 @@ class BuildRequest(BaseModel):
     path: str  # project.yaml or project directory
 
 
+class EditOpenRequest(BaseModel):
+    topo: str | None = None  # NetCDF path: re-sample depths of moved nodes
+
+
+class EditSelectRequest(BaseModel):
+    lasso: list[tuple[float, float]] | None = None  # (lon, lat) ring
+    center: tuple[float, float] | None = None  # brush center (lon, lat)
+    radius_km: float | None = Field(default=None, gt=0)
+
+
+class EditMoveRequest(BaseModel):
+    ids: list[int] = Field(min_length=1)
+    lonlat: list[tuple[float, float]] = Field(min_length=1)
+
+
+class EditSmoothRequest(BaseModel):
+    ids: list[int] = Field(min_length=1)
+    iterations: int = Field(default=1, ge=1)
+    strength: float = Field(default=0.5, gt=0, le=1)
+
+
+class EditSaveRequest(BaseModel):
+    out_dir: str
+
+
 class RefineRequest(BaseModel):
     polygon: list[tuple[float, float]] = Field(min_length=3)  # (lon, lat) ring
     target_km: float = Field(gt=0)
@@ -252,6 +277,127 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
         job = jobs.start_build(str(Path(req.path).expanduser().resolve()))
         return {"job_id": job.id}
+
+    # ------------------------------------------------------- node editing
+
+    def _edit_error(exc) -> HTTPException:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "message": str(exc),
+                "element_ids": [int(i) for i in getattr(exc, "element_ids", [])],
+            },
+        )
+
+    def _session(mesh_id: str):
+        entry = _entry(mesh_id)
+        sess = state.edit_sessions.get(mesh_id)
+        if sess is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no edit session for mesh {mesh_id!r} — POST edit/open first",
+            )
+        return entry, sess
+
+    @app.post("/api/mesh/{mesh_id}/edit/open")
+    def edit_open(mesh_id: str, req: EditOpenRequest):
+        from fmesh2.edit.ops import EditError
+        from fmesh2.server.edit import EditSession
+
+        entry = _entry(mesh_id)
+        if req.topo is not None and not Path(req.topo).expanduser().exists():
+            raise HTTPException(status_code=400, detail=f"topo file not found: {req.topo}")
+        sess = state.edit_sessions.get(mesh_id)
+        try:
+            if sess is None:
+                sess = EditSession(entry.path, entry.buffers, req.topo)
+                state.edit_sessions[mesh_id] = sess
+            elif req.topo is not None:
+                sess.set_topo(req.topo)
+        except (EditError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "n_nodes": sess.mesh.n_nodes,
+            "has_depth": sess.mesh.depth is not None,
+            "journal": sess.journal_state(),
+        }
+
+    @app.post("/api/mesh/{mesh_id}/edit/select")
+    def edit_select(mesh_id: str, req: EditSelectRequest):
+        from fmesh2.edit.ops import EditError
+
+        _, sess = _session(mesh_id)
+        try:
+            if req.lasso is not None:
+                if len(req.lasso) < 3:
+                    raise EditError("lasso needs at least 3 vertices")
+                ids = sess.select_lasso(req.lasso)
+            elif req.center is not None and req.radius_km is not None:
+                ids = sess.select_brush(req.center[0], req.center[1], req.radius_km)
+            else:
+                raise EditError("provide either lasso or center + radius_km")
+        except EditError as exc:
+            raise _edit_error(exc) from exc
+        return {"ids": [int(i) for i in ids]}
+
+    def _op_response(sess, op) -> dict:
+        return {
+            "report": op.report,
+            "update": sess.vertex_updates(op.ids),
+            "journal": sess.journal_state(),
+        }
+
+    @app.post("/api/mesh/{mesh_id}/edit/move")
+    def edit_move(mesh_id: str, req: EditMoveRequest):
+        from fmesh2.edit.ops import EditError
+
+        _, sess = _session(mesh_id)
+        try:
+            op = sess.move(req.ids, req.lonlat)
+        except EditError as exc:
+            raise _edit_error(exc) from exc
+        return _op_response(sess, op)
+
+    @app.post("/api/mesh/{mesh_id}/edit/smooth")
+    def edit_smooth(mesh_id: str, req: EditSmoothRequest):
+        from fmesh2.edit.ops import EditError
+
+        _, sess = _session(mesh_id)
+        try:
+            op = sess.smooth(req.ids, req.iterations, req.strength)
+        except EditError as exc:
+            raise _edit_error(exc) from exc
+        return _op_response(sess, op)
+
+    @app.post("/api/mesh/{mesh_id}/edit/undo")
+    def edit_undo(mesh_id: str):
+        _, sess = _session(mesh_id)
+        op = sess.undo()
+        return {
+            "update": sess.vertex_updates(op.ids) if op is not None else None,
+            "journal": sess.journal_state(),
+        }
+
+    @app.post("/api/mesh/{mesh_id}/edit/redo")
+    def edit_redo(mesh_id: str):
+        _, sess = _session(mesh_id)
+        op = sess.redo()
+        return {
+            "update": sess.vertex_updates(op.ids) if op is not None else None,
+            "journal": sess.journal_state(),
+        }
+
+    @app.post("/api/mesh/{mesh_id}/edit/save")
+    def edit_save(mesh_id: str, req: EditSaveRequest):
+        from fmesh2.edit.ops import EditError
+
+        _, sess = _session(mesh_id)
+        try:
+            out, digest = sess.save(req.out_dir)
+        except (EditError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        entry = state.open_mesh(out, reload=True)
+        return {"out_dir": str(out), "mesh_id": entry.id, "hash": digest}
 
     # ---------------------------------------------------- local refinement
 

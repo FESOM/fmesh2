@@ -36,4 +36,17 @@ test('viewer boots: WebGL2 canvas, HUD counts, project panel', async ({ page }) 
   await expect(page.locator('#hint')).toContainText('refine');
   await page.keyboard.press('Escape');
   await expect(page.locator('#bRefineDraw')).not.toHaveClass(/on/);
+
+  // M4: edit panel renders; [E] opens a live edit session on the server
+  await expect(page.locator('#edit')).toBeVisible();
+  await expect(page.locator('#bEdit')).toBeVisible();
+  await page.keyboard.press('e');
+  await expect(page.locator('#bEdit')).toHaveClass(/on/);
+  await expect(page.locator('#hint')).toContainText('edit');
+  await expect(page.locator('#editStatus')).toContainText('session open', {
+    timeout: 30_000,
+  });
+  await expect(page.locator('#editSelCount')).toContainText('0 nodes selected');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#bEdit')).not.toHaveClass(/on/);
 });
