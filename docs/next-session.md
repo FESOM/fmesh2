@@ -1,4 +1,4 @@
-# Next session — start Milestone 3 (local refinement)
+# Next session — start Milestone 4 (node editing)
 
 Paste-ready prompt:
 
@@ -8,20 +8,13 @@ Continue implementing fmesh2 (visual jigsaw-based FESOM2 mesh generator) at
 `/Users/nkolduno/PYTHON/mesh_fesom/fmesh2`.
 
 Read `docs/plans/20260710-fmesh2.md` first — it is the source of truth and its
-checkboxes are current. M1 (viewer, `v0.1.0`) and M2 (generation, Tasks 11–19,
-fmesh parity verified — see `docs/acceptance/m2.md`) are complete; repo is
-tagged `v0.2.0` with one commit per task on `main`.
+checkboxes are current. M1 (viewer, `v0.1.0`), M2 (generation, `v0.2.0`,
+fmesh parity verified) and M3 (local refinement, Tasks 20–23, `v0.3.0` —
+see `docs/acceptance/m3.md` and `docs/notes/cavity-spike.md`) are complete;
+one commit per task on `main`.
 
-Continue with **Milestone 3, Task 20 — the ⚠️ GATE cavity spike**
-(`experiments/cavity_spike.py`): on core2, extract a polygon cavity + boundary
-ring, project to a local stereographic plane, and try jigsaw `euclidean-mesh`
-with the ring as frozen geometry (`geom_feat`, `mesh_top1`, init mesh with
-ring nodes) at 3× finer target. Hard assertions: ring vertices unmoved within
-1e-12, interior sizing follows hfun. Repeat for a coastal polygon. Record the
-verdict + parameters in `docs/notes/cavity-spike.md` — it decides whether
-Tasks 21–22 use jigsaw or the Shewchuk `triangle` fallback (NOT in the meshgen
-env, non-commercial license — record packaging implications if chosen).
-Then Tasks 21–23, one task at a time: tests green before each next task
+Continue with **Milestone 4, Tasks 24–26** (node editing + release), one task
+at a time: tests green before each next task
 (`micromamba run -n meshgen python -m pytest`; for frontend tasks
 `npm --prefix frontend run test` + `build`, `make e2e` for Playwright smoke),
 tick plan checkboxes, commit per task.
@@ -29,25 +22,28 @@ tick plan checkboxes, commit per task.
 Key facts:
 - Python env: micromamba `meshgen` (py3.12, editable install done). Node v26.
 - Reference meshes: `/Users/nkolduno/PYTHON/mesh_fesom/{core2,NG5_mesh}`.
-- Parity tests (`tests/test_parity_golden.py`) skip without
-  `../fmesh/topo/RTopo-*.nc` (3.7 GB, downloaded — keep it). Legacy env
-  `fmesh_legacy` exists for golden-capture reruns (pins: `openssl>=3`,
-  `fastkml=0.12`; capture harness: `experiments/fmesh_golden_capture/`).
-- Serve for manual checks with ABSOLUTE mesh paths as a managed background
-  process (`fmesh2 <abs path> --no-browser --port 8017`); frontend rebuilds
-  need no server restart.
-- M2 pieces to reuse in M3: `core/projection.py` (spherical stereographic +
-  haversine, pure numpy), `hfun/region_layer.py` (ring loading/densify,
-  point-in-polygon in the projected plane), `generate/postprocess.py`
-  (land cut / loose elements / boundary coast flags — shared pieces for
-  cavity re-land-cut), `generate/jigsaw_driver.py` (binary discovery, msh
-  I/O patterns). The refine endpoint (Task 23) should reuse the Task 17
-  `JobManager` and the draw-mode polygon UX from Task 18.
-- jigsaw litters its cwd (`opts.log`) — pin subprocess cwd. xarray caches
-  netCDF handles — tests writing multiple .nc files need unique names.
+  ⚠️ core2 stores aux3d depths **negative-down** (edit paths match the host
+  mesh's sign convention; the M2 generator writes positive-down).
+- Parity tests skip without `../fmesh/topo/RTopo-*.nc` (3.7 GB, downloaded —
+  keep it); the coastal remesh test is gated the same way. Legacy env
+  `fmesh_legacy` exists for golden-capture reruns.
+- FESOM ASCII I/O is bit-exact for arbitrary float64 (shortest-repr writer +
+  `float_precision="round_trip"` reader) — M4's journal-replay hash
+  guarantee depends on it; don't "optimize" it away.
+- M3 pieces to reuse in M4: `edit/cavity.py` (selection/loops),
+  `edit/local_remesh.py` patterns, the shared-morph mesh swap +
+  `installMesh` in `frontend/src/scene.ts` (in-place buffer updates for
+  drags will extend `MeshLayer`), Task 17/23 `JobManager`, and the
+  refine-panel UX (`modes/refine.ts`) as the template for edit mode.
+- jigsaw gotchas (euclidean): set `hfun_hmax=inf` explicitly, keep
+  `geom_feat=False` for frozen rings, no spaces in workdir paths, pin
+  subprocess cwd (litters `.log`). See `docs/notes/cavity-spike.md`.
+- Serve for manual checks with ABSOLUTE mesh paths
+  (`fmesh2 <abs path> --no-browser --port 8017`); frontend rebuilds need no
+  server restart.
 
-State: 141 pytest + 28 vitest + 1 Playwright test green.
+State: 165 pytest + 28 vitest + 1 Playwright test green.
 
 ---
 
-After M3: M4 node editing (Tasks 24–26), then `v1.0.0`.
+After M4: `v1.0.0`, move the plan to `docs/plans/completed/`.
