@@ -141,6 +141,10 @@ export interface RefineReport {
   n_tri_after: number;
   n_new_interior_nodes: number;
   interior_resolution_km: number | null;
+  target_km: number;
+  /** Finest sizing the frozen-seam transition band allows inside the region. */
+  reachable_min_km: number;
+  target_reached: boolean;
   [key: string]: unknown;
 }
 

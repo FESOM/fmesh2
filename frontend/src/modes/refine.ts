@@ -175,7 +175,13 @@ export class RefineMode {
         ? `, median ${rep.interior_resolution_km.toFixed(1)} km`
         : '') +
       (rep && !rep.watertight_seam ? ' <span class="warn">⚠ seam not watertight</span>' : '') +
-      ` · <a href="/api/mesh/${snap.result.mesh_id}/mapping" download>mapping.csv</a>`;
+      ` · <a href="/api/mesh/${snap.result.mesh_id}/mapping" download>mapping.csv</a>` +
+      (rep && rep.target_reached === false
+        ? `<div class="warn">⚠ target ${rep.target_km} km is not reachable here: the ` +
+          `frozen-seam transition only gets down to ~${rep.reachable_min_km.toFixed(0)} km ` +
+          `inside this polygon. Draw a larger region, or refine in steps ` +
+          `(each pass makes the seam finer).</div>`
+        : '');
     try {
       const meta = await getMeshMeta(snap.result.mesh_id);
       await this.ctx.onRefined({ id: snap.result.mesh_id, meta });

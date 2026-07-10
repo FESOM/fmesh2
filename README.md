@@ -82,6 +82,15 @@ median diff 0.000%, element count +1.9%).
 ## Editing existing meshes (M3/M4)
 
 Refinement and hand-editing work on any opened mesh — no project needed.
+
+**Deep refinements are iterative.** The boundary of a refined region stays
+bit-frozen, so the resolution must transition from the surrounding mesh to
+your target over a band of ~3× the local edge length. Inside a polygon
+small relative to that band a very fine target is unreachable — the panel
+warns and reports the finest reachable size. To go e.g. 100 km → 1 km,
+either draw a region much larger than the transition band, or refine in
+steps (100 → 30 → 10 → 3 → 1 km): each pass makes the seam finer, which
+shrinks the next pass's band.
 Both are journaled/reproducible: refinements cache the raw jigsaw cavity
 (bit-identical reruns), and hand edits replay from `edits.jsonl`
 (`fmesh2.edit.journal.apply_journal`). Acceptance walkthroughs with figures:

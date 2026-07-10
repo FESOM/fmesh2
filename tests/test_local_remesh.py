@@ -216,3 +216,24 @@ def test_refine_coastal_with_topo(core2, tmp_path):
     n_bnd_before = len(boundary_edges(core2.tri, core2.n_nodes))
     n_bnd_after = len(boundary_edges(res.mesh.tri, res.mesh.n_nodes))
     assert n_bnd_after > n_bnd_before
+
+
+def test_unreachable_target_is_reported(core2, refined, tmp_path):
+    """A target far below what the seam band allows must be flagged.
+
+    Small strait-sized polygon (Gibraltar) + 1 km target on a ~50 km mesh:
+    the frozen-seam transition band (~3x seam edge) fills the cavity, so
+    the sizing never approaches the target — the report must say so
+    instead of silently delivering ~the old resolution.
+    """
+    strait = [(-6.6, 35.4), (-4.6, 35.4), (-4.6, 36.6), (-6.6, 36.6)]
+    cav = extract_cavity(core2, strait)
+    res = remesh_cavity(core2, cav, 1.0, cache_dir=tmp_path)
+    rep = res.report
+    assert rep["target_reached"] is False
+    assert rep["reachable_min_km"] > 10 * rep["target_km"]
+    assert rep["watertight_seam"]  # still a valid (just barely refined) mesh
+    # an achievable target on the big open-ocean cavity reports reached
+    big = refined[2].report
+    assert big["target_reached"] is True
+    assert big["reachable_min_km"] == pytest.approx(big["target_km"])

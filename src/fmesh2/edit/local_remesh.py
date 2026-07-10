@@ -309,6 +309,7 @@ def remesh_cavity(
     detail) with the seam protected.
     """
     xg, yg, hval = build_local_hfun(cavity, target_km, transition_km, target_field)
+    reachable_min = _reachable_min_km(mesh, cavity, target_km, transition_km)
     pts, tri = run_jigsaw_cavity(cavity, xg, yg, hval, workdir, cache_dir)
 
     # identify the frozen ring in the jigsaw output (gate: exact positions)
@@ -408,7 +409,37 @@ def remesh_cavity(
     )
 
     report = _validate(mesh, cavity, stitched, mapping, n_kept, target_km)
+    report["reachable_min_km"] = reachable_min
+    report["target_reached"] = bool(reachable_min <= 1.5 * target_km)
     return RemeshResult(mesh=stitched, mapping=mapping, report=report)
+
+
+def _reachable_min_km(
+    mesh: Mesh, cavity: Cavity, target_km: float, transition_km: float | None
+) -> float:
+    """Finest sizing the seam-protecting band allows INSIDE the cavity.
+
+    The band ramps from the (frozen) seam edge length to the target over
+    ~BAND_FACTOR x the local edge length — in a polygon small relative to
+    that band the target is simply never reached, which reads as "my input
+    was ignored". Sampled at the old cavity nodes and element centroids
+    (the band is smooth, and those points are inside by construction);
+    scalar-target estimate even when a target_field is given.
+    """
+    from fmesh2.core.projection import stereo_xy
+
+    cav_tri = mesh.tri[cavity.elem_mask]
+    nodes = np.unique(cav_tri)
+    px, py = stereo_xy(mesh.lon[nodes], mesh.lat[nodes], cavity.lon0, cavity.lat0)
+    cx, cy = stereo_xy(
+        mesh.lon[cav_tri].mean(axis=1),
+        mesh.lat[cav_tri].mean(axis=1),
+        cavity.lon0,
+        cavity.lat0,
+    )
+    pts = np.column_stack([np.concatenate([px, cx]), np.concatenate([py, cy])])
+    h, _ = seam_hfun_at(pts, cavity, float(target_km), transition_km)
+    return float(h.min())
 
 
 def _validate(mesh, cavity, stitched, mapping, n_kept, target_km) -> dict:

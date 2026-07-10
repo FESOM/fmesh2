@@ -37,7 +37,9 @@
     font: 11px ui-monospace, monospace; padding: 1px 4px; width: 100%; box-sizing: border-box;
   }
   #layers .warn { color: #e8b04a; margin-top: 3px; }
-  #refine { top: 10px; right: 280px; width: 235px; }
+  /* right-side panels tile without overlap: each offset clears the previous
+     panel's full box (width + 24px padding + 2px border + 8px gap) */
+  #refine { top: 10px; right: 304px; width: 235px; }
   #refine #refform { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 5px 0 3px; }
   #refine label { color: #7d8590; display: flex; flex-direction: column; font-size: 10px; }
   #refine input {
@@ -46,7 +48,7 @@
   }
   #refine .warn { color: #e8b04a; }
   #refine a { color: #8ab4ff; }
-  #edit { top: 10px; right: 525px; width: 240px; }
+  #edit { top: 10px; right: 573px; width: 240px; }
   #edit label { color: #7d8590; font-size: 10px; }
   #edit input {
     background: #1c2333; color: #dce3f0; border: 1px solid #39415a; border-radius: 4px;
