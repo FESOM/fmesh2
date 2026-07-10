@@ -11,7 +11,9 @@ async function boot() {
       'no mesh loaded — start with <code>fmesh2 /path/to/mesh_dir</code>';
     return;
   }
-  const { id, meta } = meshes[0];
+  const wanted = new URLSearchParams(location.search).get('mesh');
+  const { id, meta } =
+    meshes.find((m) => m.id === wanted || m.meta.name === wanted) ?? meshes[0];
   loadMsg.textContent = `loading ${meta.name} (${(meta.nodes / 1e6).toFixed(2)}M nodes)…`;
 
   const total = totalBytes(meta);
