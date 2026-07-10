@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { viridis } from '../colormap';
-import { controlsConfig, nearFar, rotateSpeed } from '../viewMode';
+import {
+  controlsConfig,
+  MIN_ALTITUDE,
+  nearFar,
+  radialClampFactor,
+  rotateSpeed,
+} from '../viewMode';
 
 describe('viridis', () => {
   it('matches the spike polynomial at the endpoints', () => {
@@ -38,9 +44,23 @@ describe('view mode state machine', () => {
     expect(controlsConfig(1).leftIsPan).toBe(true);
   });
 
-  it('map allows much closer zoom than the globe surface radius', () => {
-    expect(controlsConfig(0).minDistance).toBeGreaterThan(1);
+  it('target-relative min distances stay tiny; the surface guard is radial', () => {
+    // consistency of the zoom floor comes from radialClampFactor, not from
+    // OrbitControls minDistance (whose target drifts under zoomToCursor)
+    expect(controlsConfig(0).minDistance).toBeLessThan(0.001);
     expect(controlsConfig(1).minDistance).toBeLessThan(0.01);
+  });
+
+  it('radial clamp keeps the camera above the surface everywhere', () => {
+    const minR = 1 + MIN_ALTITUDE;
+    // inside the globe -> pushed back out to exactly the floor
+    expect(0.98 * radialClampFactor(0.98)).toBeCloseTo(minR, 10);
+    expect(1.00001 * radialClampFactor(1.00001)).toBeCloseTo(minR, 10);
+    // at or above the floor -> untouched
+    expect(radialClampFactor(minR)).toBe(1);
+    expect(radialClampFactor(2.4)).toBe(1);
+    // degenerate input never divides by zero
+    expect(radialClampFactor(0)).toBe(1);
   });
 
   it('near plane tracks altitude', () => {

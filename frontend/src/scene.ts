@@ -6,7 +6,14 @@ import { coastLayer } from './layers/coastLayer';
 import { MeshLayer } from './layers/meshLayer';
 import { PickingPass } from './picking';
 import type { CoastBuffers, MeshBuffers, MeshMeta } from './types';
-import { controlsConfig, nearFar, rotateSpeed, type ViewMode } from './viewMode';
+import {
+  controlsConfig,
+  MIN_MAP_HEIGHT,
+  nearFar,
+  radialClampFactor,
+  rotateSpeed,
+  type ViewMode,
+} from './viewMode';
 
 export interface ViewerInput {
   id: string;
@@ -206,6 +213,15 @@ export function startViewer(input: ViewerInput): void {
     camera.far = nf.far;
     camera.updateProjectionMatrix();
     controls.update();
+
+    // hard surface floor, measured from the globe center (the OrbitControls
+    // target drifts under zoomToCursor, so its own minDistance can't do this)
+    if (mode === 0) {
+      camera.position.multiplyScalar(radialClampFactor(camera.position.length()));
+    } else if (camera.position.z < MIN_MAP_HEIGHT) {
+      camera.position.z = MIN_MAP_HEIGHT;
+    }
+
     renderer.render(scene, camera);
 
     times.push(t);
