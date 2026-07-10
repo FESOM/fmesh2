@@ -1,6 +1,11 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  test: {
+    // Playwright specs are run by `npm run e2e`, not vitest
+    exclude: ['e2e/**', 'node_modules/**'],
+  },
   build: {
     outDir: '../src/fmesh2/server/static',
     emptyOutDir: true,

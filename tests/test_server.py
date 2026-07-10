@@ -200,3 +200,81 @@ def test_project_endpoints_without_project(client):
     assert client.get("/api/project").status_code == 404
     assert client.get("/api/project/hfun").status_code == 404
     assert client.get("/api/project/estimate").status_code == 404
+
+
+# ------------------------------------------------------- local refinement (M3)
+
+
+def _wait_job(client, job_id: str, timeout: float = 300.0) -> dict:
+    import time
+
+    t0 = time.time()
+    snap: dict = {}
+    while time.time() - t0 < timeout:
+        snap = client.get(f"/api/jobs/{job_id}").json()
+        if snap["status"] in ("done", "error", "cancelled"):
+            return snap
+        time.sleep(0.25)
+    raise TimeoutError(f"job never finished: {snap}")
+
+
+def test_refine_end_to_end(client, core2_dir, tmp_path):
+    mesh_id = client.post("/api/meshes/open", json={"path": str(core2_dir)}).json()["id"]
+    r = client.post(
+        f"/api/mesh/{mesh_id}/refine",
+        json={
+            "polygon": [[-42, 28], [-28, 28], [-28, 36], [-42, 36]],
+            "target_km": 60.0,
+            "out_dir": str(tmp_path / "refined"),
+        },
+    )
+    assert r.status_code == 200, r.text
+    snap = _wait_job(client, r.json()["job_id"])
+    assert snap["status"] == "done", snap
+    result = snap["result"]
+    assert result["report"]["watertight_seam"] is True
+    assert result["n_nodes"] > 0
+
+    # the refined mesh auto-registered in the viewer
+    new_id = result["mesh_id"]
+    assert new_id != mesh_id
+    assert any(m["id"] == new_id for m in client.get("/api/meshes").json())
+    assert client.get(f"/api/mesh/{new_id}/meta").status_code == 200
+
+    # mapping table downloadable from the refined mesh, absent on the source
+    mapping = client.get(f"/api/mesh/{new_id}/mapping")
+    assert mapping.status_code == 200
+    lines = mapping.text.splitlines()
+    assert lines[0] == "old_id,new_id"
+    assert len(lines) == 126858 + 1  # one row per source node
+    assert client.get(f"/api/mesh/{mesh_id}/mapping").status_code == 404
+
+
+def test_refine_validation_and_failure(client, core2_dir, tmp_path):
+    assert (
+        client.post("/api/mesh/nope/refine", json={"polygon": [[0, 0]] * 3, "target_km": 50}).status_code
+        == 404
+    )
+    mesh_id = client.post("/api/meshes/open", json={"path": str(core2_dir)}).json()["id"]
+    # schema validation: short polygon / non-positive target
+    bad = client.post(f"/api/mesh/{mesh_id}/refine", json={"polygon": [[0, 0], [1, 1]], "target_km": 50})
+    assert bad.status_code == 422
+    bad = client.post(f"/api/mesh/{mesh_id}/refine", json={"polygon": [[0, 0]] * 3, "target_km": 0})
+    assert bad.status_code == 422
+    bad = client.post(
+        f"/api/mesh/{mesh_id}/refine",
+        json={"polygon": [[0, 0]] * 3, "target_km": 50, "topo": str(tmp_path / "nope.nc")},
+    )
+    assert bad.status_code == 400 and "topo" in bad.json()["detail"]
+    # a land polygon fails in the worker and surfaces as a job error
+    r = client.post(
+        f"/api/mesh/{mesh_id}/refine",
+        json={
+            "polygon": [[2, 20], [10, 20], [10, 26], [2, 26]],
+            "target_km": 50.0,
+            "out_dir": str(tmp_path / "land"),
+        },
+    )
+    snap = _wait_job(client, r.json()["job_id"])
+    assert snap["status"] == "error"
+    assert "no elements" in snap["error"]

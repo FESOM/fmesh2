@@ -23,4 +23,17 @@ test('viewer boots: WebGL2 canvas, HUD counts, project panel', async ({ page }) 
   await expect(page.locator('#layers')).toContainText('project');
   await expect(page.locator('#bDraw')).toBeVisible();
   await expect(page.locator('#bHfun')).toBeVisible();
+
+  // M3: refine panel renders with its target inputs and draw button
+  await expect(page.locator('#refine')).toBeVisible();
+  await expect(page.locator('#refine')).toContainText('refine');
+  await expect(page.locator('#bRefineDraw')).toBeVisible();
+  await expect(page.locator('#refTarget')).toHaveValue('25');
+
+  // entering refine mode flips the button on and shows the hint
+  await page.keyboard.press('v');
+  await expect(page.locator('#bRefineDraw')).toHaveClass(/on/);
+  await expect(page.locator('#hint')).toContainText('refine');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#bRefineDraw')).not.toHaveClass(/on/);
 });

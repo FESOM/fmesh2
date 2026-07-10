@@ -4,9 +4,9 @@ import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fmesh2.server.jobs import TERMINAL, JobManager
 from fmesh2.server.state import AppState
@@ -20,6 +20,15 @@ class OpenMeshRequest(BaseModel):
 
 class BuildRequest(BaseModel):
     path: str  # project.yaml or project directory
+
+
+class RefineRequest(BaseModel):
+    polygon: list[tuple[float, float]] = Field(min_length=3)  # (lon, lat) ring
+    target_km: float = Field(gt=0)
+    transition_km: float | None = Field(default=None, gt=0)
+    topo: str | None = None  # NetCDF path enables the coastal land cut
+    minimum_depth: float = 5.0
+    out_dir: str | None = None  # default: sibling '<mesh>_refined[-N]'
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -243,6 +252,45 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
         job = jobs.start_build(str(Path(req.path).expanduser().resolve()))
         return {"job_id": job.id}
+
+    # ---------------------------------------------------- local refinement
+
+    @app.post("/api/mesh/{mesh_id}/refine")
+    def refine_mesh(mesh_id: str, req: RefineRequest):
+        entry = _entry(mesh_id)
+        if req.topo is not None and not Path(req.topo).expanduser().exists():
+            raise HTTPException(status_code=400, detail=f"topo file not found: {req.topo}")
+        if req.out_dir is not None:
+            out = Path(req.out_dir).expanduser()
+        else:
+            out = entry.path.parent / f"{entry.path.name}_refined"
+            k = 1
+            while out.exists():
+                k += 1
+                out = entry.path.parent / f"{entry.path.name}_refined-{k}"
+        job = jobs.start_refine(
+            {
+                "mesh_dir": str(entry.path),
+                "polygon": [list(p) for p in req.polygon],
+                "target_km": req.target_km,
+                "transition_km": req.transition_km,
+                "topo": req.topo,
+                "minimum_depth": req.minimum_depth,
+                "out_dir": str(out),
+            }
+        )
+        return {"job_id": job.id, "out_dir": str(out)}
+
+    @app.get("/api/mesh/{mesh_id}/mapping")
+    def mesh_mapping(mesh_id: str):
+        entry = _entry(mesh_id)
+        path = entry.path / "mapping.csv"
+        if not path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"mesh {mesh_id!r} has no old->new mapping table (not a refined mesh?)",
+            )
+        return FileResponse(path, media_type="text/csv", filename="mapping.csv")
 
     def _job(job_id: str):
         job = jobs.jobs.get(job_id)

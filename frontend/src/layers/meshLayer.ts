@@ -23,12 +23,18 @@ export class MeshLayer {
   };
   field: ScalarField = 'res';
 
-  constructor(readonly meta: MeshMeta, buffers: MeshBuffers) {
+  constructor(
+    readonly meta: MeshMeta,
+    buffers: MeshBuffers,
+    morph: { value: number } = { value: 0 },
+  ) {
     const posAttr = new THREE.BufferAttribute(buffers.pos, 3);
     const pos2Attr = new THREE.BufferAttribute(buffers.pos2, 3);
 
+    // `morph` may be shared with coast/overlay/draw layers so an A/B mesh
+    // swap keeps every layer morphing in lockstep
     this.uniforms = {
-      uMorph: { value: 0 },
+      uMorph: morph,
       uField: { value: 0 },
       uRange: { value: new THREE.Vector2(meta.res_range[0], meta.res_range[1]) },
     };
@@ -110,5 +116,13 @@ export class MeshLayer {
     this.uniforms.uField.value = field === 'res' ? 0 : 1;
     const range = field === 'res' ? this.meta.res_range : this.meta.dep_range;
     this.uniforms.uRange.value.set(range[0], range[1]);
+  }
+
+  /** Free GPU resources (geometries/materials) after an A/B swap. */
+  dispose(): void {
+    for (const obj of [this.fill, this.wire, this.points]) {
+      obj.geometry.dispose();
+      (obj.material as THREE.Material).dispose();
+    }
   }
 }

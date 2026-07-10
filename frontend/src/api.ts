@@ -125,6 +125,45 @@ export interface Estimate {
 
 export const fetchEstimate = () => fetchJson<Estimate>('/api/project/estimate');
 
+// ------------------------------------------------------ refinement (M3)
+
+export interface RefineParams {
+  polygon: [number, number][]; // (lon, lat) ring
+  target_km: number;
+  transition_km?: number | null;
+  out_dir?: string;
+}
+
+export interface RefineReport {
+  watertight_seam: boolean;
+  n_nodes_after: number;
+  n_tri_after: number;
+  n_new_interior_nodes: number;
+  interior_resolution_km: number | null;
+  [key: string]: unknown;
+}
+
+export interface JobSnapshot {
+  id: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  stage: string;
+  fraction: number;
+  log_tail: string[];
+  result: { mesh_id?: string; out_dir?: string; report?: RefineReport } | null;
+  error: string | null;
+}
+
+export const refineMesh = (meshId: string, params: RefineParams) =>
+  fetchJson<{ job_id: string; out_dir: string }>(
+    `/api/mesh/${meshId}/refine`,
+    jsonInit('POST', params),
+  );
+
+export const getJob = (jobId: string) => fetchJson<JobSnapshot>(`/api/jobs/${jobId}`);
+
+export const getMeshMeta = (meshId: string) =>
+  fetchJson<MeshMeta>(`/api/mesh/${meshId}/meta`);
+
 export interface HfunGridData {
   values: Float32Array;
   nLat: number;

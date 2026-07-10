@@ -31,6 +31,7 @@ STAGE_FRACTIONS = {
     "write": 0.90,
     "register": 0.95,
 }
+REFINE_FRACTIONS = {"extract": 0.05, "remesh": 0.30, "write": 0.85}
 TERMINAL = ("done", "error", "cancelled")
 MAX_EVENTS = 2000
 
@@ -94,6 +95,73 @@ def _run_build(project_path: str, queue) -> None:
         )
 
 
+def _run_refine(args: dict, queue) -> None:
+    """Worker-process entry point for local refinement (M3)."""
+    try:
+        from pathlib import Path
+
+        from fmesh2.core.io_fesom import read_fesom, write_fesom
+        from fmesh2.edit.cavity import extract_cavity
+        from fmesh2.edit.local_remesh import remesh_cavity, write_mapping_csv
+
+        def stage(name):
+            queue.put({"type": "stage", "stage": name, "fraction": REFINE_FRACTIONS[name]})
+
+        def log(line):
+            queue.put({"type": "log", "line": line})
+
+        out_dir = Path(args["out_dir"])
+
+        stage("extract")
+        mesh = read_fesom(args["mesh_dir"])
+        cavity = extract_cavity(mesh, args["polygon"])
+        log(
+            f"cavity: {cavity.n_elems} elements, ring {len(cavity.ring_nodes)} "
+            f"nodes in {cavity.n_loops} loop(s)"
+        )
+
+        stage("remesh")
+        topo = None
+        if args.get("topo"):
+            from fmesh2.data.topo import open_topo
+
+            topo = open_topo(args["topo"])
+        res = remesh_cavity(
+            mesh,
+            cavity,
+            args["target_km"],
+            transition_km=args.get("transition_km"),
+            topo=topo,
+            minimum_depth=args.get("minimum_depth", 5.0),
+            cache_dir=out_dir / "cache",
+        )
+        rep = res.report
+        achieved = rep["interior_resolution_km"]
+        log(
+            f"stitched: {rep['n_nodes_after']} nodes "
+            f"({rep['n_new_interior_nodes']} new interior), "
+            f"watertight={rep['watertight_seam']}"
+            + (f", median new resolution {achieved:.1f} km" if achieved else "")
+        )
+
+        stage("write")
+        write_fesom(res.mesh, out_dir)
+        write_mapping_csv(out_dir / "mapping.csv", res.mapping)
+        queue.put(
+            {
+                "type": "done",
+                "out_dir": str(out_dir),
+                "n_nodes": res.mesh.n_nodes,
+                "n_tri": res.mesh.n_tri,
+                "report": rep,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 — everything must surface in the job
+        queue.put(
+            {"type": "error", "message": str(exc), "traceback": traceback.format_exc()}
+        )
+
+
 @dataclass
 class Job:
     id: str
@@ -136,12 +204,19 @@ class JobManager:
         self._lock = threading.Lock()
 
     def start_build(self, project_path: str) -> Job:
+        return self._start(_run_build, (str(project_path),), label=str(project_path))
+
+    def start_refine(self, args: dict) -> Job:
+        """`args` are the `_run_refine` inputs (mesh_dir, polygon, target_km, ...)."""
+        return self._start(_run_refine, (args,), label=args["mesh_dir"])
+
+    def _start(self, target, args: tuple, label: str) -> Job:
         with self._lock:
             self._counter += 1
-            job = Job(id=f"j{self._counter}", project_path=str(project_path))
+            job = Job(id=f"j{self._counter}", project_path=label)
             self.jobs[job.id] = job
         queue = self._ctx.Queue()
-        proc = self._ctx.Process(target=_run_build, args=(str(project_path), queue), daemon=True)
+        proc = self._ctx.Process(target=target, args=(*args, queue), daemon=True)
         proc.start()
         self._procs[job.id] = proc
         threading.Thread(

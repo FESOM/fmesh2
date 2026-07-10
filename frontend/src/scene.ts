@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { loadMeshBuffers } from './api';
 import { initColorbar, updateColorbar } from './colorbar';
 import { Inspector } from './inspect';
 import { coastLayer } from './layers/coastLayer';
 import { HfunOverlay } from './layers/hfunOverlay';
 import { MeshLayer } from './layers/meshLayer';
 import { DrawMode } from './modes/draw';
+import { RefineMode } from './modes/refine';
 import { initLayerPanel } from './panels/layers';
 import { PickingPass } from './picking';
 import type { CoastBuffers, MeshBuffers, MeshMeta } from './types';
@@ -53,22 +55,24 @@ export function startViewer(input: ViewerInput): void {
   );
   scene.add(inner);
 
-  const mesh = new MeshLayer(meta, buffers);
+  // one morph uniform shared by every layer, surviving A/B mesh swaps
+  const morph = { value: 0 };
+  let mesh = new MeshLayer(meta, buffers, morph);
   scene.add(mesh.group);
 
   let coastLine: THREE.LineSegments | null = null;
   if (coast) {
-    coastLine = coastLayer(coast, mesh.uniforms.uMorph);
+    coastLine = coastLayer(coast, morph);
     scene.add(coastLine);
   }
 
   // ---------- picking / inspect ----------
-  const picking = new PickingPass(
+  let picking = new PickingPass(
     mesh.fill.geometry.getAttribute('position') as THREE.BufferAttribute,
     mesh.fill.geometry.getAttribute('position2') as THREE.BufferAttribute,
-    mesh.uniforms.uMorph,
+    morph,
   );
-  const inspector = new Inspector(input.id, buffers, mesh.uniforms.uMorph);
+  let inspector = new Inspector(input.id, buffers, morph);
   scene.add(inspector.marker);
 
   let pointerX = -1;
@@ -87,13 +91,13 @@ export function startViewer(input: ViewerInput): void {
     downY = e.clientY;
   });
   renderer.domElement.addEventListener('click', (e) => {
-    if (draw.active) return; // draw mode owns clicks
+    if (draw.active || refine.active) return; // polygon modes own clicks
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return; // was a drag
     void inspector.pin(picking.pick(renderer, camera, e.clientX, e.clientY));
   });
 
   // ---------- project panel / hfun preview / draw mode (M2) ----------
-  const overlay = new HfunOverlay(mesh.uniforms.uMorph);
+  const overlay = new HfunOverlay(morph);
   scene.add(overlay.mesh);
   const refreshOverlay = () => {
     if (!overlay.mesh.visible) return;
@@ -110,7 +114,7 @@ export function startViewer(input: ViewerInput): void {
     canvas: renderer.domElement,
     camera,
     scene,
-    morph: mesh.uniforms.uMorph,
+    morph,
     getMode: () => mode,
     onFinish: async (verts) => {
       await panel.addRegionLayer(verts);
@@ -129,24 +133,89 @@ export function startViewer(input: ViewerInput): void {
     },
   });
 
+  // ---------- refine mode + A/B compare (M3) ----------
+  type Slot = { id: string; meta: MeshMeta; buffers: MeshBuffers };
+  let slotA: Slot = { id: input.id, meta, buffers };
+  let slotB: Slot | null = null;
+  let showing: 'A' | 'B' = 'A';
+
+  function installMesh(id: string, m: MeshMeta, b: MeshBuffers): void {
+    const wire = mesh.wire.visible;
+    const pts = mesh.points.visible;
+    const field = mesh.field;
+    scene.remove(mesh.group);
+    scene.remove(inspector.marker);
+    mesh.dispose();
+    mesh = new MeshLayer(m, b, morph);
+    mesh.wire.visible = wire;
+    mesh.points.visible = pts;
+    mesh.setField(field);
+    scene.add(mesh.group);
+    picking = new PickingPass(
+      mesh.fill.geometry.getAttribute('position') as THREE.BufferAttribute,
+      mesh.fill.geometry.getAttribute('position2') as THREE.BufferAttribute,
+      morph,
+    );
+    inspector = new Inspector(id, b, morph);
+    scene.add(inspector.marker);
+    updateCounts(m);
+    showColorbar();
+  }
+
+  function swapAB(): void {
+    if (!slotB) return;
+    showing = showing === 'A' ? 'B' : 'A';
+    const s = showing === 'A' ? slotA : slotB;
+    installMesh(s.id, s.meta, s.buffers);
+    refine.setSlots(slotA, slotB, showing);
+  }
+
+  const refine: RefineMode = new RefineMode({
+    canvas: renderer.domElement,
+    camera,
+    scene,
+    morph,
+    getMode: () => mode,
+    currentMesh: () => {
+      const s = showing === 'A' ? slotA : slotB!;
+      return { id: s.id, meta: s.meta };
+    },
+    onRefined: async (m) => {
+      const bufs = await loadMeshBuffers(m.id);
+      slotA = showing === 'A' ? slotA : slotB!; // A := the mesh that was refined
+      slotB = { id: m.id, meta: m.meta, buffers: bufs };
+      showing = 'B';
+      installMesh(m.id, m.meta, bufs);
+      refine.setSlots(slotA, slotB, showing);
+    },
+    onSwapRequest: () => swapAB(),
+    onHint: (text) => {
+      $('hint').textContent = text ?? controlsConfig(mode).hint;
+    },
+  });
+
   // ---------- HUD ----------
   $('load').style.display = 'none';
   $('hud').style.display = 'block';
   initColorbar();
-  const showColorbar = () => {
-    const range = mesh.field === 'res' ? meta.res_range : meta.dep_range;
+  function showColorbar(): void {
+    const m = mesh.meta;
+    const range = mesh.field === 'res' ? m.res_range : m.dep_range;
     updateColorbar(
       mesh.field === 'res' ? 'resolution [km]' : 'depth [m]',
       range[0],
       range[1],
       mesh.field === 'res' ? 1 : 0,
     );
-  };
+  }
+  function updateCounts(m: MeshMeta): void {
+    $('counts').innerHTML =
+      `<b>${m.name}</b> &nbsp; ${(m.nodes / 1e6).toFixed(2)}M nodes · ` +
+      `${(m.triangles / 1e6).toFixed(2)}M tri · ${(m.edges / 1e6).toFixed(2)}M edges<br>` +
+      `<span class="dim">${(Object.values(m.bytes).reduce((a, b) => a + b, 0) / 1e6).toFixed(0)} MB buffers</span>`;
+  }
   showColorbar();
-  $('counts').innerHTML =
-    `<b>${meta.name}</b> &nbsp; ${(meta.nodes / 1e6).toFixed(2)}M nodes · ` +
-    `${(meta.triangles / 1e6).toFixed(2)}M tri · ${(meta.edges / 1e6).toFixed(2)}M edges<br>` +
-    `<span class="dim">${(Object.values(meta.bytes).reduce((a, b) => a + b, 0) / 1e6).toFixed(0)} MB buffers</span>`;
+  updateCounts(meta);
   $('loadtime').textContent = `fetch ${input.fetchSec.toFixed(1)}s`;
 
   // ---------- view mode ----------
@@ -210,9 +279,15 @@ export function startViewer(input: ViewerInput): void {
       else showColorbar();
     },
     x: () => {
+      if (refine.active) return; // one polygon mode at a time
       if (!panel.hasProject() && !draw.active) return; // needs an open project
       draw.toggle();
     },
+    v: () => {
+      if (draw.active) return; // one polygon mode at a time
+      refine.toggle();
+    },
+    b: () => swapAB(),
   };
   addEventListener('keydown', (e) => {
     if (!(e.target as HTMLElement)?.closest('input,textarea')) actions[e.key.toLowerCase()]?.();
@@ -248,12 +323,12 @@ export function startViewer(input: ViewerInput): void {
       inspector.hover(picking.pick(renderer, camera, pointerX, pointerY));
     }
 
-    const mv = mesh.uniforms.uMorph.value;
+    const mv = morph.value;
     if (mv !== morphTarget) {
       const next = mv + (morphTarget - mv) * Math.min(1, dt * 5);
-      mesh.uniforms.uMorph.value = Math.abs(next - morphTarget) < 0.002 ? morphTarget : next;
+      morph.value = Math.abs(next - morphTarget) < 0.002 ? morphTarget : next;
     }
-    inner.visible = mesh.uniforms.uMorph.value < 0.25;
+    inner.visible = morph.value < 0.25;
 
     const d =
       mode === 0
