@@ -67,3 +67,27 @@ def test_mesh_validation():
         Mesh(lon=np.zeros(2), lat=np.zeros(2), tri=np.array([[0, 1, 2]]))
     with pytest.raises(ValueError, match="equal length"):
         Mesh(lon=np.zeros(2), lat=np.zeros(3), tri=np.zeros((0, 3), dtype=int))
+
+
+def test_long_decimal_roundtrip(tmp_path):
+    """Arbitrary float64 (17 significant digits) must survive write -> read.
+
+    pandas' default float writer keeps 16 digits and loses 1 ulp — write_fesom
+    formats with shortest round-trippable repr instead (needed for M3: nodes
+    produced by stereographic inverse projection have full-precision decimals).
+    """
+    rng = np.random.default_rng(42)
+    lon = rng.uniform(-180.0, 180.0, 50)
+    lat = rng.uniform(-89.0, 89.0, 50)
+    lon[0] = np.nextafter(-41.054100625587324, -42.0)
+    depth = rng.uniform(-6000.0, -5.0, 50)
+    tri = np.column_stack(
+        [np.arange(0, 48, 3), np.arange(1, 49, 3), np.arange(2, 50, 3)]
+    ).astype(np.int32)
+    mesh = Mesh(lon=lon, lat=lat, tri=tri, depth=depth,
+                levels=np.array([0.0, -5.0]))
+    write_fesom(mesh, tmp_path)
+    m2 = read_fesom(tmp_path)
+    np.testing.assert_array_equal(mesh.lon, m2.lon)
+    np.testing.assert_array_equal(mesh.lat, m2.lat)
+    np.testing.assert_array_equal(mesh.depth, m2.depth)

@@ -23,7 +23,12 @@ def _read_table(path: Path, n_cols_min: int) -> tuple[int, pd.DataFrame]:
         count = int(header[0])
     except (IndexError, ValueError):
         raise ValueError(f"{path}: first line must be the record count") from None
-    df = pd.read_csv(path, sep=r"\s+", header=None, skiprows=1)
+    # round_trip: the C engine's default float parser loses 1 ulp on long
+    # decimals — bit-exact reads underpin the M3 outside-untouched stitch
+    # guarantee and M4 journal-replay hashes (costs ~2.8x on float parsing)
+    df = pd.read_csv(
+        path, sep=r"\s+", header=None, skiprows=1, float_precision="round_trip"
+    )
     if len(df) < count:
         raise ValueError(f"{path}: header promises {count} rows, found {len(df)}")
     if df.shape[1] < n_cols_min:
@@ -49,7 +54,11 @@ def read_fesom(mesh_dir: str | Path) -> Mesh:
     depth = None
     aux = mesh_dir / "aux3d.out"
     if aux.exists():
-        vals = pd.read_csv(aux, header=None, dtype=np.float64).to_numpy().ravel()
+        vals = (
+            pd.read_csv(aux, header=None, dtype=np.float64, float_precision="round_trip")
+            .to_numpy()
+            .ravel()
+        )
         nlev = int(vals[0])
         if 1 + nlev > len(vals):
             raise ValueError(f"{aux}: promises {nlev} levels, file too short")
@@ -76,9 +85,13 @@ def write_fesom(mesh: Mesh, out_dir: str | Path) -> None:
             "flag": coast.astype(np.int64),
         }
     )
+    # shortest round-trippable decimal per float: pandas' default float writer
+    # keeps only 16 significant digits, losing 1 ulp on long-decimal values
+    fmt = lambda x: repr(float(x))  # noqa: E731
+
     with open(out_dir / "nod2d.out", "w") as f:
         f.write(f"{mesh.n_nodes}\n")
-        nod.to_csv(f, sep=" ", header=False, index=False)
+        nod.to_csv(f, sep=" ", header=False, index=False, float_format=fmt)
 
     elem = pd.DataFrame(np.asarray(mesh.tri, dtype=np.int64) + 1)
     with open(out_dir / "elem2d.out", "w") as f:
@@ -90,6 +103,6 @@ def write_fesom(mesh: Mesh, out_dir: str | Path) -> None:
         with open(out_dir / "aux3d.out", "w") as f:
             f.write(f"{len(levels)}\n")
             if len(levels):
-                pd.Series(levels).to_csv(f, header=False, index=False)
+                pd.Series(levels).to_csv(f, header=False, index=False, float_format=fmt)
             if mesh.depth is not None:
-                pd.Series(mesh.depth).to_csv(f, header=False, index=False)
+                pd.Series(mesh.depth).to_csv(f, header=False, index=False, float_format=fmt)
