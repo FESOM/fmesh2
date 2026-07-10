@@ -35,14 +35,16 @@ for reg in regions:
         arrays[f"region_{name}_{tag}_lat"] = np.asarray(lat, dtype=np.float64)
 np.savez_compressed(out / "hfun_field.npz", **arrays)
 
-# smoothed coastline points actually used by refine_along_coastlines
+# smoothed coastline points actually used by refine_along_coastlines;
+# ragged per-coastline sequences stored flat + segment lengths
 coast_pkl = workdir / "coastlines" / "min_length=100km_averaging=50km.pkl"
 with open(coast_pkl, "rb") as f:
     lon_coast, lat_coast = pickle.load(f)
 np.savez_compressed(
     out / "coast_points.npz",
-    lon=np.asarray(lon_coast, dtype=np.float64),
-    lat=np.asarray(lat_coast, dtype=np.float64),
+    lon=np.concatenate([np.asarray(x, dtype=np.float64) for x in lon_coast]),
+    lat=np.concatenate([np.asarray(x, dtype=np.float64) for x in lat_coast]),
+    lengths=np.array([len(x) for x in lon_coast], dtype=np.int64),
 )
 
 # raw jigsaw mesh counts (pre land-cut) for driver-level comparison
