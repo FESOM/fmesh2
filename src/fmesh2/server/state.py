@@ -24,11 +24,13 @@ class AppState:
     _counter: int = 0
     _coast: dict[str, np.ndarray] | None = None
 
-    def open_mesh(self, path: str | Path) -> MeshEntry:
+    def open_mesh(self, path: str | Path, reload: bool = False) -> MeshEntry:
         path = Path(path).expanduser().resolve()
-        for entry in self.meshes.values():
+        for entry in list(self.meshes.values()):
             if entry.path == path:
-                return entry
+                if not reload:
+                    return entry
+                del self.meshes[entry.id]  # rebuilt mesh: drop the stale entry
         if not (path / "nod2d.out").exists():
             raise FileNotFoundError(f"{path} is not a FESOM2 mesh directory (no nod2d.out)")
         buffers = load_or_build(path, cache_dir=self.cache_dir)

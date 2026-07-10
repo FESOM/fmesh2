@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from fmesh2.server.jobs import TERMINAL, JobManager
 from fmesh2.server.state import AppState
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -14,6 +16,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 class OpenMeshRequest(BaseModel):
     path: str
+
+
+class BuildRequest(BaseModel):
+    path: str  # project.yaml or project directory
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -79,6 +85,68 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if name not in coast:
             raise HTTPException(status_code=404, detail=f"unknown buffer {name!r}")
         return Response(content=coast[name].tobytes(), media_type="application/octet-stream")
+
+    # ------------------------------------------------------- generation jobs
+
+    def _register_built_mesh(out_dir: str) -> dict:
+        entry = state.open_mesh(out_dir, reload=True)
+        return {"mesh_id": entry.id}
+
+    jobs = JobManager(register=_register_built_mesh)
+    app.state.jobs = jobs
+
+    @app.post("/api/project/build")
+    def build_project_endpoint(req: BuildRequest):
+        from fmesh2.project import Project, ProjectError
+
+        try:
+            project = Project.load(req.path)
+        except ProjectError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if project.topo is None:
+            raise HTTPException(
+                status_code=400, detail="project.topo is required to build a mesh"
+            )
+        job = jobs.start_build(str(Path(req.path).expanduser().resolve()))
+        return {"job_id": job.id}
+
+    def _job(job_id: str):
+        job = jobs.jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"unknown job id {job_id!r}")
+        return job
+
+    @app.get("/api/jobs/{job_id}")
+    def job_status(job_id: str):
+        return _job(job_id).snapshot()
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def job_cancel(job_id: str):
+        _job(job_id)
+        return jobs.cancel(job_id).snapshot()
+
+    @app.websocket("/api/jobs/{job_id}")
+    async def job_events(ws: WebSocket, job_id: str):
+        job = jobs.jobs.get(job_id)
+        if job is None:
+            await ws.close(code=4404)
+            return
+        await ws.accept()
+        cursor = 0
+        try:
+            while True:
+                while cursor < len(job.events):
+                    await ws.send_json(job.events[cursor])
+                    cursor += 1
+                if job.status in TERMINAL:
+                    await ws.send_json({"type": "status", **job.snapshot()})
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            try:
+                await ws.close()
+            except RuntimeError:
+                pass  # client already gone
 
     if (STATIC_DIR / "index.html").exists():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
