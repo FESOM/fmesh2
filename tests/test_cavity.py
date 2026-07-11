@@ -181,3 +181,18 @@ def test_single_node_polygon_selects_star(core2):
     star = np.flatnonzero((core2.tri == n).any(axis=1))
     assert set(np.flatnonzero(cav.elem_mask)) == set(star)
     assert n not in cav.ring_nodes  # cavity-interior -> replaced by a remesh
+
+
+def test_pole_encircling_polygon(core2):
+    """A ring drawn around the whole Arctic extracts a valid cavity.
+
+    Regression: the ring closes at lon +-180, and the projected first/last
+    points coincide only to ~1e-13 — this used to be rejected as a
+    'self-intersecting' polygon.
+    """
+    ring = [(float(lon), 64.0) for lon in np.arange(-180, 180, 30.0)]
+    cav = extract_cavity(core2, ring)
+    assert cav.n_elems > 40_000  # the whole Arctic ocean
+    assert cav.n_loops > 10  # seam + many coastline loops (islands)
+    assert cav.edge_is_coast.any() and (~cav.edge_is_coast).any()
+    assert abs(cav.lat0 - 90.0) < 1.0  # projection centered near the pole

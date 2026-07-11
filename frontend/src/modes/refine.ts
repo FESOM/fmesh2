@@ -37,6 +37,8 @@ export class RefineMode {
   private pollBusy = false; // interval ticks can overlap their async work
   private settled = false;
   private lastRegion: string | null = null;
+  private jobId: string | null = null;
+  private cancelBtn!: HTMLButtonElement;
 
   constructor(private readonly ctx: RefineContext) {
     const panel = document.createElement('div');
@@ -51,9 +53,14 @@ export class RefineMode {
           <input id="refTopo" type="text" placeholder="/path/to/RTopo.nc"></label>
       </div>
       <div id="refStatus" class="dim">draw a polygon on the mesh to refine it</div>
+      <button id="refCancel" style="display:none">cancel job</button>
       <div id="refAB"></div>`;
     document.body.appendChild(panel);
     this.status = panel.querySelector('#refStatus')!;
+    this.cancelBtn = panel.querySelector('#refCancel')!;
+    this.cancelBtn.addEventListener('click', () => {
+      if (this.jobId) void fetch(`/api/jobs/${this.jobId}/cancel`, { method: 'POST' });
+    });
     this.abLine = panel.querySelector('#refAB')!;
     this.targetInput = panel.querySelector('#refTarget')!;
     this.transInput = panel.querySelector('#refTrans')!;
@@ -139,6 +146,8 @@ export class RefineMode {
       return;
     }
     this.status.textContent = 'refining…';
+    this.jobId = jobId;
+    this.cancelBtn.style.display = '';
     clearInterval(this.polling);
     this.settled = false;
     this.pollBusy = false;
@@ -164,15 +173,20 @@ export class RefineMode {
     } catch (err) {
       clearInterval(this.polling);
       this.settled = true;
+      this.cancelBtn.style.display = 'none';
       this.status.textContent = String(err);
       return;
     }
     if (snap.status === 'running') {
-      this.status.textContent = `refining: ${snap.stage} ${(snap.fraction * 100).toFixed(0)}%`;
+      const tail = snap.log_tail.at(-1);
+      this.status.innerHTML =
+        `refining: ${snap.stage} ${(snap.fraction * 100).toFixed(0)}%` +
+        (tail ? `<br><span class="dim">${tail.slice(0, 60)}</span>` : '');
       return;
     }
     clearInterval(this.polling);
     this.settled = true;
+    this.cancelBtn.style.display = 'none';
     if (snap.status !== 'done' || !snap.result?.mesh_id) {
       this.status.textContent = `refine ${snap.status}: ${snap.error ?? 'no result'}`;
       return;

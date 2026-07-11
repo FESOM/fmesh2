@@ -75,9 +75,14 @@ def _polygon_plane(ring_lonlat: np.ndarray) -> tuple[shapely.Polygon, float, flo
     """Densified drawn polygon in its own stereographic plane."""
     ring = _densify(_close(np.asarray(ring_lonlat, dtype=np.float64)))
     lon0, lat0 = ring_center(ring[:, 0], ring[:, 1])
-    poly = shapely.Polygon(
-        np.column_stack(stereo_xy(ring[:, 0], ring[:, 1], lon0, lat0))
-    )
+    xy = np.column_stack(stereo_xy(ring[:, 0], ring[:, 1], lon0, lat0))
+    # pole-encircling rings close at lon +-180: the first and last projected
+    # points coincide only to ~1e-13, which shapely reads as a degenerate
+    # self-intersecting closure segment — drop the duplicate and let the
+    # polygon close itself exactly
+    if np.hypot(*(xy[0] - xy[-1])) < 1e-6:
+        xy = xy[:-1]
+    poly = shapely.Polygon(xy)
     if not poly.is_valid:
         raise CavityError("polygon is self-intersecting")
     return poly, lon0, lat0

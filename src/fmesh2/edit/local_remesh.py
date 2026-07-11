@@ -116,16 +116,22 @@ def build_local_hfun(
     pad = max(
         BAND_FACTOR * float(cavity.edge_len_km.max()), transition_km or 0.0
     )
-    cell = min(target_km, float(cavity.edge_len_km.min())) / 3.0
+    finest = min(target_km, float(cavity.edge_len_km.min()))
     x0, x1 = cavity.ring_xy[:, 0].min() - pad, cavity.ring_xy[:, 0].max() + pad
     y0, y1 = cavity.ring_xy[:, 1].min() - pad, cavity.ring_xy[:, 1].max() + pad
+    # cell: finest/3 when it fits, else floor at the grid cap — the hfun only
+    # has to resolve the seam ramp (band >= 3x seam edge) and the target
+    # plateau, so cells up to `finest` still sample both adequately; only a
+    # cell coarser than the finest scale would blur the sizing
+    cell = max(finest / 3.0, max(x1 - x0, y1 - y0) / (MAX_HFUN_GRID - 1))
+    if cell > finest:
+        raise RemeshError(
+            f"region needs a {cell:.2f} km hfun cell to fit the "
+            f"{MAX_HFUN_GRID}-per-axis grid, coarser than the finest scale "
+            f"({finest:.2f} km) — split the region or coarsen the target"
+        )
     nx = int(np.ceil((x1 - x0) / cell)) + 1
     ny = int(np.ceil((y1 - y0) / cell)) + 1
-    if max(nx, ny) > MAX_HFUN_GRID:
-        raise RemeshError(
-            f"local hfun grid {nx}x{ny} exceeds {MAX_HFUN_GRID} per axis — "
-            "target too fine for this cavity size"
-        )
     xg = np.linspace(x0, x1, nx)
     yg = np.linspace(y0, y1, ny)
     xx, yy = np.meshgrid(xg, yg)
@@ -163,19 +169,30 @@ def _cavity_hash(cavity: Cavity, xg, yg, hval) -> str:
 
 
 def run_jigsaw_cavity(
-    cavity: Cavity, xg, yg, hval, workdir=None, cache_dir=None
+    cavity: Cavity,
+    xg,
+    yg,
+    hval,
+    workdir=None,
+    cache_dir=None,
+    progress: Callable[[str], None] | None = None,
+    process_callback: Callable[[subprocess.Popen], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Plane triangulation of the cavity with the ring frozen.
 
     Returns (points_xy, triangles); the ring vertices are guaranteed present
     bit-exact. Cached as npz keyed by the exact inputs (the determinism
-    anchor for reproducible refinements).
+    anchor for reproducible refinements). `progress` streams raw jigsaw
+    stdout lines; `process_callback` receives the Popen right after spawn
+    (jigsaw runs in its own process group, so big jobs can be cancelled).
     """
     cache_file = None
     if cache_dir is not None:
         cache_file = Path(cache_dir) / f"cavity_{_cavity_hash(cavity, xg, yg, hval)}.npz"
         if cache_file.exists():
             d = np.load(cache_file)
+            if progress:
+                progress(f"reusing cached cavity mesh {cache_file.name}")
             return d["pts"], d["tri"]
 
     if workdir is None:
@@ -225,16 +242,28 @@ def run_jigsaw_cavity(
         setattr(opts, key, value)
     jigsawpy.savejig(opts.jcfg_file, opts)
 
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [_find_jigsaw(), opts.jcfg_file],
-        cwd=workdir,  # jigsaw writes .log files into its cwd
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=600,
+        cwd=workdir,  # jigsaw writes .log files into its cwd
+        start_new_session=True,  # own process group: killable as a unit
     )
-    if proc.returncode != 0:
-        tail = "\n".join(proc.stdout.splitlines()[-25:])
-        raise JigsawError(f"jigsaw cavity remesh failed ({proc.returncode}):\n{tail}")
+    if process_callback:
+        process_callback(proc)
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip()
+        tail = (tail + [line])[-25:]
+        if progress and line:
+            progress(line)
+    code = proc.wait()
+    if code != 0:
+        raise JigsawError(
+            f"jigsaw cavity remesh failed ({code}):\n" + "\n".join(tail)
+        )
 
     out = T()
     jigsawpy.loadmsh(opts.mesh_file, out)
@@ -243,6 +272,112 @@ def run_jigsaw_cavity(
     if cache_file is not None:
         np.savez_compressed(cache_file, pts=pts, tri=tri)
     return pts, tri
+
+
+#: weld tolerance for jigsaw output vertices (1 m — far below any mesh scale)
+WELD_TOL_KM = 1e-3
+
+
+def _weld_cavity(
+    pts: np.ndarray, tri: np.ndarray, ring_xy: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Merge near-coincident jigsaw output vertices; drop collapsed triangles.
+
+    At continent scale jigsaw occasionally emits clusters of vertices within
+    ~1e-5 km of each other (observed: whole-Arctic run, 794 zero-area
+    micro-triangles, two of them wedged onto seam edges — breaking the
+    watertight stitch). Each cluster is welded to one representative; a
+    member sitting bit-exact on a ring vertex wins, so the frozen-ring
+    guarantee is untouched. Positions are never averaged.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    pairs = cKDTree(pts).query_pairs(WELD_TOL_KM, output_type="ndarray")
+    if not len(pairs):
+        return pts, tri
+    graph = coo_matrix(
+        (np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(pts),) * 2
+    )
+    _, labels = connected_components(graph, directed=False)
+    ring_pos = {p.tobytes() for p in np.ascontiguousarray(ring_xy)}
+    pts = pts.copy()
+    mapping = np.arange(len(pts))
+    involved = np.unique(pairs)
+    for lab in np.unique(labels[involved]):
+        members = np.flatnonzero(labels == lab)
+        on_ring = [m for m in members if np.ascontiguousarray(pts[m]).tobytes() in ring_pos]
+        distinct = {np.ascontiguousarray(pts[m]).tobytes() for m in on_ring}
+        if len(distinct) > 1:
+            raise RemeshError(
+                "two frozen ring vertices coincide within the weld tolerance — "
+                "the region boundary pinches to a point; adjust the polygon"
+            )
+        # jigsaw lists init (ring) vertices first: the smallest index at the
+        # ring position is the true frozen vertex
+        rep = int(min(on_ring)) if on_ring else int(members.min())
+        mapping[members] = rep
+        # park orphaned duplicates far away so the exact-position ring match
+        # can never pick one of them over the representative
+        orphans = members[members != rep]
+        pts[orphans] = 1e12
+    tri = mapping[tri]
+    ok = (tri[:, 0] != tri[:, 1]) & (tri[:, 1] != tri[:, 2]) & (tri[:, 2] != tri[:, 0])
+    return pts, tri[ok]
+
+
+def _repair_split_seams(
+    pts: np.ndarray,
+    tri: np.ndarray,
+    cavity: Cavity,
+    ring_new: np.ndarray,
+    progress: Callable[[str], None] | None = None,
+) -> np.ndarray:
+    """Un-split frozen seam edges that jigsaw bisected.
+
+    jigsaw's encroachment rule bisects a boundary edge whenever another
+    vertex falls inside its diametral circle — independent of the hfun, so
+    the seam band cannot prevent it where a (finely subdivided) coastline
+    passes close to a seam edge (observed: 2 of 194 seam edges on the
+    whole-Arctic run). Repair: delete each bisection vertex (it lies
+    bit-on the segment) and re-triangulate its link — the fill restores
+    the frozen edge exactly.
+    """
+    from .topo_ops import _ear_clip, _link_chain
+
+    seam = cavity.ring_edges[~cavity.edge_is_coast]
+    ge = np.sort(ring_new[seam], axis=1).astype(np.uint64)
+    for a, b in ge:
+        for _ in range(4):  # a cascade may have split the edge more than once
+            has_a = (tri == int(a)).any(axis=1)
+            has_b = (tri == int(b)).any(axis=1)
+            if (has_a & has_b).any():
+                break
+            # bisection vertices lie ON the segment a-b (interior)
+            pa, pb = pts[int(a)], pts[int(b)]
+            seg = pb - pa
+            L2 = float(seg @ seg)
+            rel = pts - pa
+            t_par = (rel @ seg) / L2
+            d = np.abs(seg[0] * rel[:, 1] - seg[1] * rel[:, 0]) / np.sqrt(L2)
+            cand = np.flatnonzero((d < 1e-6) & (t_par > 1e-9) & (t_par < 1 - 1e-9))
+            cand = cand[(cand != a) & (cand != b)]
+            if not cand.size:
+                raise RemeshError(
+                    "a frozen seam edge is missing from the jigsaw output and "
+                    "no bisection vertex was found to repair it"
+                )
+            m = int(cand[np.argmin(np.abs(t_par[cand] - 0.5))])
+            star, chain, closed = _link_chain(tri.astype(np.int64), m)
+            fill = np.empty((0, 3), dtype=tri.dtype)
+            if len(chain) >= 3:
+                local, _ = _ear_clip(pts[chain], m)
+                fill = np.asarray(chain, dtype=tri.dtype)[local]
+            tri = np.vstack([np.delete(tri, star, axis=0), fill])
+            if progress:
+                progress(f"restored a bisected seam edge (removed split vertex {m})")
+    return tri
 
 
 # ---------------------------------------------------------- land cut inside
@@ -315,17 +450,32 @@ def remesh_cavity(
     minimum_depth: float = 5.0,
     workdir=None,
     cache_dir=None,
+    progress: Callable[[str], None] | None = None,
+    process_callback: Callable[[subprocess.Popen], None] | None = None,
 ) -> RemeshResult:
     """Remesh the cavity at `target_km` and stitch it back bit-exact.
 
     Outside nodes keep their exact lon/lat/depth; node ids are renumbered
     contiguously with the old->new mapping returned (`-1` = removed). With
     `topo` given, the land cut is re-run inside the cavity (finer coastline
-    detail) with the seam protected.
+    detail) with the seam protected. `progress`/`process_callback` stream
+    jigsaw output and expose its process for cancellation of big jobs.
     """
     xg, yg, hval = build_local_hfun(cavity, target_km, transition_km, target_field)
     reachable_min = _reachable_min_km(mesh, cavity, target_km, transition_km)
-    pts, tri = run_jigsaw_cavity(cavity, xg, yg, hval, workdir, cache_dir)
+    if progress:
+        progress(
+            f"local hfun grid {len(xg)}x{len(yg)} "
+            f"(cell {float(xg[1] - xg[0]):.2f} km)"
+        )
+        progress(f"expecting roughly {_estimate_elements(mesh, cavity, target_km, transition_km):,} elements")
+    pts, tri = run_jigsaw_cavity(
+        cavity, xg, yg, hval, workdir, cache_dir, progress, process_callback
+    )
+    n_raw = len(tri)
+    pts, tri = _weld_cavity(pts, tri, cavity.ring_xy)
+    if progress and len(tri) != n_raw:
+        progress(f"welded {n_raw - len(tri)} degenerate micro-triangles away")
 
     # identify the frozen ring in the jigsaw output (gate: exact positions)
     dist, ring_new = cKDTree(pts).query(cavity.ring_xy, workers=-1)
@@ -333,6 +483,7 @@ def remesh_cavity(
         raise RemeshError(
             f"frozen ring not preserved by jigsaw (max displacement {dist.max():.3e} km)"
         )
+    tri = _repair_split_seams(pts, tri, cavity, ring_new, progress)
 
     seam_local = np.unique(cavity.ring_edges[~cavity.edge_is_coast])
     if topo is not None:
@@ -427,6 +578,25 @@ def remesh_cavity(
     report["reachable_min_km"] = reachable_min
     report["target_reached"] = bool(reachable_min <= 1.5 * target_km)
     return RemeshResult(mesh=stitched, mapping=mapping, report=report)
+
+
+def _estimate_elements(
+    mesh: Mesh, cavity: Cavity, target_km: float, transition_km: float | None
+) -> int:
+    """Rough new-element count: old element areas / equilateral area at the
+    local sizing (evaluated at the old centroids) — sets expectations for
+    big jobs before jigsaw starts."""
+    from fmesh2.core.projection import stereo_xy
+
+    cav_tri = mesh.tri[cavity.elem_mask]
+    px, py = stereo_xy(mesh.lon, mesh.lat, cavity.lon0, cavity.lat0)
+    p = np.stack([px[cav_tri], py[cav_tri]], axis=-1)  # (m, 3, 2)
+    u = p[:, 1] - p[:, 0]
+    v = p[:, 2] - p[:, 0]
+    area = 0.5 * np.abs(u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0])
+    cx = p.mean(axis=1)
+    h, _ = seam_hfun_at(cx, cavity, float(target_km), transition_km)
+    return int(np.sum(area / (np.sqrt(3.0) / 4.0 * h**2)))
 
 
 def _reachable_min_km(

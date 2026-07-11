@@ -134,6 +134,8 @@ def _run_refine(args: dict, queue) -> None:
             topo=topo,
             minimum_depth=args.get("minimum_depth", 5.0),
             cache_dir=out_dir / "cache",
+            progress=log,
+            process_callback=lambda p: queue.put({"type": "jigsaw_pid", "pid": p.pid}),
         )
         rep = res.report
         achieved = rep["interior_resolution_km"]

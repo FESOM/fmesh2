@@ -318,3 +318,62 @@ def test_strait_carved_open_with_topo(core2, tmp_path):
     med, n_comp = _strait_stats(res.mesh)
     assert n_comp == 1  # Atlantic and Mediterranean stay connected
     assert med < 12.0  # real ~14 km channel resolved by ~5-8 km elements
+
+
+def test_arctic_scale_hfun_fits_grid(core2):
+    """Continent-scale region + fine target: the hfun cell floors at the
+    grid cap instead of erroring (regression: whole-Arctic at 4 km)."""
+    ring = [(float(lon), 64.0) for lon in np.arange(-180, 180, 30.0)]
+    cav = extract_cavity(core2, ring)
+    xg, yg, h = build_local_hfun(cav, 4.0)
+    assert max(len(xg), len(yg)) <= 4096
+    cell = float(xg[1] - xg[0])
+    assert cell <= 4.0  # never coarser than the finest scale
+    assert h.min() == pytest.approx(4.0)
+
+    from fmesh2.edit.local_remesh import _estimate_elements
+
+    est = _estimate_elements(core2, cav, 4.0, None)
+    assert 1_000_000 < est < 4_000_000  # ~2.1M expected
+
+    # a target the grid cannot resolve over this extent is still rejected
+    with pytest.raises(RemeshError, match="split the region"):
+        build_local_hfun(cav, 0.5)
+
+
+def test_weld_and_seam_repair_units():
+    """The continent-scale robustness passes (synthetic minimal cases)."""
+    from fmesh2.edit.local_remesh import _repair_split_seams, _weld_cavity
+
+    # --- weld: a micro-cluster of 3 points within 1e-6 km collapses onto
+    # the ring vertex that sits bit-exact at the same spot
+    ring_xy = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+    pts = np.vstack([
+        ring_xy,
+        [[5.0, 5.0]],                       # 4: real interior point
+        [[0.0, 0.0], [1e-7, 1e-7]],         # 5,6: duplicates of ring vertex 0
+    ])
+    tri = np.array([
+        [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4],
+        [0, 5, 6],                          # zero-area micro-triangle
+    ])
+    pts2, tri2 = _weld_cavity(pts, tri, ring_xy)
+    assert len(tri2) == 4                   # micro-triangle dropped
+    assert (tri2 < 5).all()                 # duplicates welded onto vertex 0
+    np.testing.assert_array_equal(pts2[:4], ring_xy)  # positions untouched
+
+    # --- seam repair: jigsaw bisected the frozen seam edge 0-1 at vertex 5
+    class Cav:
+        ring_edges = np.array([[0, 1], [1, 2], [2, 3], [3, 0]])
+        edge_is_coast = np.array([False, True, True, True])
+        ring_nodes = np.arange(4)
+
+    pts = np.vstack([ring_xy, [[5.0, 5.0]], [[5.0, 0.0]]])  # 5 = split vertex
+    tri = np.array([
+        [0, 5, 4], [5, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4],
+    ])
+    ring_new = np.arange(4)
+    tri2 = _repair_split_seams(pts, tri, Cav, ring_new, None)
+    has = ((tri2 == 0).any(axis=1) & (tri2 == 1).any(axis=1))
+    assert has.any()                        # frozen edge 0-1 restored
+    assert not (tri2 == 5).any()            # split vertex removed
