@@ -562,11 +562,44 @@ def remesh_cavity(
     tri_new_part = new_id_of[tri]
     tri_stitched = np.vstack([mapping[outside_tri], tri_new_part]).astype(np.int32)
 
+    old_coast = mesh.coast_flag[keep_old] if mesh.coast_flag is not None else None
+
+    # FESOM hygiene: no element may have all three vertices on the boundary
+    tri_stitched, node_keep, n_hygiene = _drop_all_boundary_triangles(
+        tri_stitched, lon.size
+    )
+    if n_hygiene:
+        seam_final = new_id_of[ring_new[seam_local]]
+        if not node_keep[seam_final].all():
+            raise RemeshError(
+                "all-boundary-triangle cleanup removed a seam vertex; the "
+                "cavity polygon likely clips a degenerate coastal strip"
+            )
+        renum = np.cumsum(node_keep) - 1
+        tri_stitched = renum[tri_stitched].astype(np.int32)
+        lon = lon[node_keep]
+        lat = lat[node_keep]
+        if depth is not None:
+            depth = depth[node_keep]
+        if old_coast is not None:
+            old_coast = old_coast[node_keep[:n_kept]]
+        pos = mapping >= 0
+        ids = mapping[pos]
+        upd = mapping.copy()
+        upd[np.flatnonzero(pos)] = np.where(node_keep[ids], renum[ids], -1)
+        mapping = upd
+        n_kept = int(node_keep[:n_kept].sum())
+        if progress:
+            progress(
+                f"removed {n_hygiene} all-boundary elements "
+                "(FESOM partitioner hygiene)"
+            )
+
     coast = None
-    if mesh.coast_flag is not None:
+    if old_coast is not None:
         on_boundary = boundary_nodes(tri_stitched, lon.size)
         coast = np.concatenate(
-            [mesh.coast_flag[keep_old], on_boundary[n_kept:].astype(np.int8)]
+            [old_coast, on_boundary[n_kept:].astype(np.int8)]
         )
 
     stitched = Mesh(
@@ -575,6 +608,7 @@ def remesh_cavity(
     )
 
     report = _validate(mesh, cavity, stitched, mapping, n_kept, target_km)
+    report["n_all_boundary_removed"] = n_hygiene
     report["reachable_min_km"] = reachable_min
     report["target_reached"] = bool(reachable_min <= 1.5 * target_km)
     return RemeshResult(mesh=stitched, mapping=mapping, report=report)
@@ -625,6 +659,31 @@ def _reachable_min_km(
     pts = np.column_stack([np.concatenate([px, cx]), np.concatenate([py, cy])])
     h, _ = seam_hfun_at(pts, cavity, float(target_km), transition_km)
     return float(h.min())
+
+
+
+def _drop_all_boundary_triangles(tri: np.ndarray, n_nodes: int):
+    """Remove elements whose three vertices all lie on the mesh boundary.
+
+    FESOM forbids such elements (``fesom_meshpart`` rejects the mesh with
+    "eliminate these triangles ..."). The cavity land cut can leave
+    single-triangle bays along fine coastlines that violate this rule.
+    Removal is iterative because deleting one element can expose another.
+    Returns ``(tri, node_keep_mask, n_removed)``; nodes orphaned by the
+    removal are marked for dropping in the mask.
+    """
+    n_removed = 0
+    while tri.size:
+        bnd = np.zeros(n_nodes, dtype=bool)
+        bnd[boundary_nodes(tri, n_nodes)] = True
+        bad = bnd[tri].all(axis=1)
+        if not bad.any():
+            break
+        n_removed += int(bad.sum())
+        tri = tri[~bad]
+    keep = np.zeros(n_nodes, dtype=bool)
+    keep[tri.ravel()] = True
+    return tri, keep, n_removed
 
 
 def _validate(mesh, cavity, stitched, mapping, n_kept, target_km) -> dict:
