@@ -38,7 +38,9 @@ generation, M3 local refinement, M4 node editing; acceptance records in
 - `src/fmesh2/edit/` — M3/M4: `cavity.py` (polygon selection → boundary
   loops), `local_remesh.py` (frozen-ring jigsaw cavity remesh + stitch),
   `ops.py` (move/smooth with inversion safeguards), `journal.py` (JSONL
-  undo/redo log, deterministic replay, `mesh_hash`).
+  undo/redo log, deterministic replay, `mesh_hash`), `redepth.py` (topo
+  re-sampling + smooth_seafloor.f90 smoothing, new nodes only or global;
+  CLI `fmesh2 redepth`).
 - `src/fmesh2/server/` — FastAPI app, `state.py` registry, `jobs.py`
   (worker-process jobs + WS progress), `edit.py` (per-mesh edit sessions).
 - `src/fmesh2/viewer/buffers.py` — GPU buffer builder (disk-cached).

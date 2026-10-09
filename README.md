@@ -57,6 +57,11 @@ make frontend-build
 fmesh2 /path/to/mesh_dir        # open mesh(es) in the browser viewer
 fmesh2 build project.yaml       # headless mesh generation (reproducible)
 fmesh2 convert MESH_DIR OUT     # FESOM2 ASCII -> binary viewer buffers
+fmesh2 redepth MESH OUT --original ORIG --topo TOPO.nc
+                                # re-sample depths from TOPO onto the nodes added by
+                                # refinement and smooth them; old nodes unchanged
+fmesh2 redepth MESH OUT --mode global --topo TOPO.nc
+                                # re-sample and smooth the depths of every node
 ```
 
 A FESOM2 mesh directory contains `nod2d.out`, `elem2d.out`, `aux3d.out`.
@@ -117,6 +122,49 @@ Both are journaled/reproducible: refinements cache the raw jigsaw cavity
 (`fmesh2.edit.journal.apply_journal`). Acceptance walkthroughs with figures:
 `docs/acceptance/m3.md` (refine + A/B) and `docs/acceptance/m4.md`
 (full refine-then-edit workflow on the Denmark Strait).
+
+## Re-sampling bathymetry (`fmesh2 redepth`)
+
+`redepth` samples depths from a topography file, clamps them and smooths
+them with the neighbour-average sweep of FESOM's `smooth_seafloor.f90`.
+
+**Local mode** (default) — after a refinement, only the nodes the
+refinement added are re-sampled and smoothed; every old node keeps its
+depth unchanged and serves as a fixed neighbour value. Re-smoothing the
+whole mesh instead would smooth the old nodes a second time.
+
+```
+fmesh2 redepth REFINED_DIR OUT_DIR --original ORIGINAL_DIR --topo TOPO.nc
+```
+
+New nodes are those whose exact lon/lat is not in `ORIGINAL_DIR`, so one
+run covers any number of refinement passes. There is no separate seam
+treatment: refinement grows the elements gradually from the old seam size
+to the target, so near the seam the smoother acts over about the same
+distance as it did on the original mesh.
+
+**Global mode** — every node is re-sampled and smoothed:
+
+```
+fmesh2 redepth MESH_DIR OUT_DIR --mode global --topo TOPO.nc
+```
+
+**Settings must match how the original bathymetry was made.** Defaults are
+the values in `smooth_seafloor.f90`, except that there is no maximum depth:
+
+| option            | default | meaning                                         |
+|-------------------|---------|-------------------------------------------------|
+| `--min-depth`     | 30 m    | shallower values (incl. land in TOPO) set to it |
+| `--max-depth`     | none    | optional cap; deeper values set to it           |
+| `--iterations`    | 1       | smoothing sweeps                                |
+| `--center-weight` | 2       | relative weight of a node vs. its neighbours    |
+
+Depth sign follows the mesh; recomputed depths are rounded to whole metres,
+as `smooth_seafloor.f90` writes them. Only `nod2d.out`, `elem2d.out` (unchanged) and
+`aux3d.out` are written; regenerate derived files (edges, levels) with the
+FESOM mesh partitioner. The printed edge steepness `|h1-h2|/(h1+h2)` (also
+in `OUT_DIR/redepth_report.json`) compares seam and new nodes with the
+untouched mesh as a check.
 
 ## Development
 
