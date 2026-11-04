@@ -92,6 +92,18 @@ median diff 0.000%, element count +1.9%).
 
 Refinement and hand-editing work on any opened mesh — no project needed.
 
+**Refinement regions from a file.** Instead of drawing, the refine panel
+can load a region GeoJSON with one polygon (path on the server, *load*):
+the polygon appears as if drawn, Enter refines. Every refinement writes
+the polygon it used and its settings (target km, transition km, topo,
+minimum depth, source mesh) to `region.geojson` in the refined mesh's
+folder; loading that file on another mesh takes over the settings too and
+refines exactly the same area. Files with two rings (fmesh inner + outer)
+are rejected — set the transition km instead. With a transition km the
+seam keeps the existing resolution exactly; without one, the automatic
+band is narrow and the seam sizing keeps a 1.2x headroom so jigsaw does
+not split seam edges.
+
 **Deleting / adding nodes by hand** lives in edit mode (`[E]`): select and
 press `⌫` to delete (works for coastal nodes too — the coastline locally
 straightens to the chord between the neighbours), or use the *add* tool to

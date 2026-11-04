@@ -15,6 +15,9 @@ Task 20 gate parameters (`docs/notes/cavity-spike.md`):
   length (narrower bands make jigsaw split the longest frozen edges) —
   SEAM segments only: coast segments border land, nothing stitches to
   them, so jigsaw may subdivide the coast polyline to meet the target.
+  With an explicit transition width the ramp is gentle and the headroom
+  is `WIDE_HEADROOM` (1.0) instead, so no ring of coarser elements is
+  left along the seam.
 
 Reproducibility follows the M2 contract: the raw jigsaw cavity is cached
 (npz keyed by the exact inputs) and everything around it is pure numpy, so
@@ -45,6 +48,7 @@ from fmesh2.generate.postprocess import _neighbor_and_valence
 from .cavity import Cavity
 
 RING_HEADROOM = 1.2   # hfun at the ring = headroom x local seam-edge length
+WIDE_HEADROOM = 1.0   # ... when an explicit transition_km makes the ramp gentle
 BAND_FACTOR = 3.0     # per-segment transition band = factor x edge length
 SEAM_MATCH_TOL_KM = 1e-6  # ring vertices must reappear this close (measured: 0.0)
 MAX_HFUN_GRID = 4096  # per-axis cap on the local hfun grid
@@ -65,11 +69,19 @@ class RemeshResult:
 
 # --------------------------------------------------------------------- hfun
 
-def seam_hfun_at(points_xy, cavity: Cavity, target, transition_km: float | None = None):
+def seam_hfun_at(
+    points_xy,
+    cavity: Cavity,
+    target,
+    transition_km: float | None = None,
+    headroom: float | None = None,
+):
     """The seam-protecting ramp evaluated at plane points (km).
 
     `target` is a scalar or a per-point array. The band is per SEAM segment:
-    `max(BAND_FACTOR * segment_length, transition_km)`.
+    `max(BAND_FACTOR * segment_length, transition_km)`. The ramp starts at
+    `headroom` x the nearest seam segment's length; by default
+    `seam_headroom(transition_km)`.
 
     Only seam segments (shared with the outside mesh) are protected — those
     edges must survive jigsaw untouched for the stitch. Coast segments are
@@ -87,6 +99,8 @@ def seam_hfun_at(points_xy, cavity: Cavity, target, transition_km: float | None 
     seam = ~cavity.edge_is_coast
     if not seam.any():
         return target.copy(), np.full(len(points_xy), np.inf)
+    if headroom is None:
+        headroom = seam_headroom(transition_km)
     seam_len = cavity.edge_len_km[seam]
     segs = shapely.linestrings(cavity.ring_xy[cavity.ring_edges[seam]])
     pgeo = shapely.points(points_xy)
@@ -95,9 +109,22 @@ def seam_hfun_at(points_xy, cavity: Cavity, target, transition_km: float | None 
     hseam = np.empty(len(points_xy))
     band = np.empty(len(points_xy))
     d[inp] = shapely.distance(pgeo[inp], segs[near])
-    hseam[inp] = RING_HEADROOM * seam_len[near]
+    hseam[inp] = headroom * seam_len[near]
     band[inp] = np.maximum(BAND_FACTOR * seam_len[near], transition_km or 0.0)
     return target + (hseam - target) * np.clip(1.0 - d / band, 0.0, 1.0), d
+
+
+def seam_headroom(transition_km: float | None) -> float:
+    """Headroom of the seam ramp.
+
+    `RING_HEADROOM` (1.2) for the automatic band of `BAND_FACTOR` seam
+    edges: that ramp is steep, and without headroom the sizing just inside
+    the seam drops below the frozen edge length and jigsaw splits seam
+    edges. `WIDE_HEADROOM` (1.0) with an explicit `transition_km`: the ramp
+    is gentle, and 1.2 would only leave a ring of ~5% coarser elements
+    along the seam.
+    """
+    return RING_HEADROOM if transition_km is None else WIDE_HEADROOM
 
 
 def build_local_hfun(

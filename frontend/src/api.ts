@@ -135,6 +135,8 @@ export interface RefineParams {
   /** Topography NetCDF path: re-runs the land cut inside the region, so the
    * coastline is re-resolved from data instead of keeping the old polyline. */
   topo?: string | null;
+  /** Minimum ocean depth (m) of the land cut; server default when omitted. */
+  minimum_depth?: number;
   out_dir?: string;
 }
 
@@ -157,7 +159,12 @@ export interface JobSnapshot {
   stage: string;
   fraction: number;
   log_tail: string[];
-  result: { mesh_id?: string; out_dir?: string; report?: RefineReport } | null;
+  result: {
+    mesh_id?: string;
+    out_dir?: string;
+    region_file?: string;
+    report?: RefineReport;
+  } | null;
   error: string | null;
 }
 
@@ -165,6 +172,21 @@ export const refineMesh = (meshId: string, params: RefineParams) =>
   fetchJson<{ job_id: string; out_dir: string }>(
     `/api/mesh/${meshId}/refine`,
     jsonInit('POST', params),
+  );
+
+/** Refinement settings stored in a region file (all optional). */
+export interface RegionSettings {
+  target_km?: number | null;
+  transition_km?: number | null;
+  topo?: string | null;
+  minimum_depth?: number | null;
+  source_mesh?: string | null;
+}
+
+/** Polygon and settings of a single-ring region GeoJSON on the server. */
+export const getRegion = (path: string) =>
+  fetchJson<{ path: string; ring: number[][]; settings: RegionSettings }>(
+    `/api/region?path=${encodeURIComponent(path)}`,
   );
 
 export const getJob = (jobId: string) => fetchJson<JobSnapshot>(`/api/jobs/${jobId}`);
