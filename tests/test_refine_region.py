@@ -1,24 +1,29 @@
 """Refinement regions from a file: region.geojson written by every
-refinement, read back by the viewer's region-file field, single ring only,
-and the seam headroom (1.0 with a transition width, 1.2 without).
+refinement, read back by the viewer's region-file field, single ring only;
+the seam headroom (1.0 with a transition width, 1.2 without) and the
+smooth transition sizing (no rays from per-seam-edge ramps).
 
 Synthetic mesh (a jittered ~1 degree Delaunay grid): no reference data.
 """
 
+import dataclasses
 import json
 import time
 from pathlib import Path
 
 import numpy as np
 import pytest
+import shapely
 from fastapi.testclient import TestClient
 from scipy.spatial import Delaunay
 
 from fmesh2.core.io_fesom import write_fesom
+from fmesh2.core.projection import stereo_xy
 from fmesh2.core.mesh import Mesh
 from fmesh2.edit.cavity import extract_cavity
 from fmesh2.edit.local_remesh import (
     RING_HEADROOM,
+    SEAM_FLOOR,
     WIDE_HEADROOM,
     seam_headroom,
     seam_hfun_at,
@@ -40,6 +45,35 @@ def grid_mesh() -> Mesh:
     tri = Delaunay(np.column_stack([lon, lat])).simplices.astype(np.int32)
     return Mesh(lon=lon, lat=lat, tri=tri, depth=np.full(lon.size, -3000.0),
                 coast_flag=np.zeros(lon.size, np.int8), levels=np.array([0.0, -10.0, -6000.0]))
+
+
+def fine_mesh() -> Mesh:
+    """~27 km jittered grid (seam spacing like a real 30 km mesh)."""
+    rng = np.random.default_rng(0)
+    g = np.arange(5.0, 35.01, 0.25)
+    lon, lat = (a.ravel() for a in np.meshgrid(g, g))
+    lon = lon + rng.uniform(-0.03, 0.03, lon.size)
+    lat = lat + rng.uniform(-0.03, 0.03, lat.size)
+    tri = Delaunay(np.column_stack([lon, lat])).simplices.astype(np.int32)
+    return Mesh(lon=lon, lat=lat, tri=tri, depth=np.full(lon.size, -3000.0))
+
+
+FINE_SQUARE = [[12.0, 12.0], [28.0, 12.0], [28.0, 28.0], [12.0, 28.0]]
+
+
+def partly_fine_mesh() -> Mesh:
+    """fine_mesh with a ~5.5 km patch where the square's east side runs,
+    like a seam through an area refined before."""
+    base = fine_mesh()
+    centre, radius = np.array([28.0, 20.0]), 2.5
+    keep = np.hypot(base.lon - centre[0], base.lat - centre[1]) > radius
+    f = np.arange(-radius, radius + 1e-9, 0.05)
+    flon, flat = (a.ravel() + c for a, c in zip(np.meshgrid(f, f), centre))
+    disk = np.hypot(flon - centre[0], flat - centre[1]) <= radius
+    lon = np.concatenate([base.lon[keep], flon[disk]])
+    lat = np.concatenate([base.lat[keep], flat[disk]])
+    tri = Delaunay(np.column_stack([lon, lat])).simplices.astype(np.int32)
+    return Mesh(lon=lon, lat=lat, tri=tri, depth=np.full(lon.size, -3000.0))
 
 
 def feature(ring, properties=None):
@@ -142,3 +176,73 @@ def test_refine_writes_region_file_and_it_repeats(client, tmp_path):
     assert snap2["result"]["n_nodes"] == snap["result"]["n_nodes"]
     assert json.loads((tmp_path / "again" / "region.geojson").read_text())["features"][0]["geometry"] == \
         json.loads(region_file.read_text())["features"][0]["geometry"]
+
+
+def test_cavity_keeps_the_drawn_polygon():
+    mesh = grid_mesh()
+    cav = extract_cavity(mesh, SQUARE)
+    assert cav.polygon_xy is not None and np.array_equal(cav.polygon_xy[0], cav.polygon_xy[-1])
+    assert shapely.Polygon(cav.polygon_xy).area > 0
+    assert extract_cavity(mesh, elem_mask=cav.elem_mask).polygon_xy is None
+
+
+def _max_jump_along(cav, polygon_xy, dist_km, transition_km):
+    """Largest relative sizing jump between neighbouring points 0.5 km apart
+    on a path `dist_km` inside the polygon and parallel to it."""
+    poly = shapely.Polygon(polygon_xy)
+    path = np.asarray(shapely.segmentize(poly.buffer(-dist_km).exterior, 0.5).coords)
+    h, _ = seam_hfun_at(path, cav, 5.0, transition_km)
+    return float(np.max(np.abs(np.diff(h)) / h[:-1]))
+
+
+def test_transition_has_no_rays_away_from_the_seam():
+    """Per-seam-edge ramps jump where the nearest seam edge changes (rays);
+    the smooth transition does not, beyond the seam-protection zone."""
+    cav = extract_cavity(fine_mesh(), FINE_SQUARE)
+    per_edge = dataclasses.replace(cav, polygon_xy=None)  # sizing without the polygon
+    for dist in (150.0, 220.0):
+        assert _max_jump_along(cav, cav.polygon_xy, dist, 300.0) < 0.08
+        assert _max_jump_along(per_edge, cav.polygon_xy, dist, 300.0) > 0.25
+
+
+def test_sizing_next_to_the_seam_is_unchanged():
+    """At the seam: exactly the frozen edge length; within SEAM_FLOOR[0] edge
+    lengths: never below the per-edge ramp; without a transition width:
+    identical to the per-edge ramp everywhere."""
+    cav = extract_cavity(fine_mesh(), FINE_SQUARE)
+    per_edge = dataclasses.replace(cav, polygon_xy=None)
+    seam = np.flatnonzero(~cav.edge_is_coast)
+    a, b = cav.ring_edges[seam].T
+    mids = 0.5 * (cav.ring_xy[a] + cav.ring_xy[b])
+    h, _ = seam_hfun_at(mids, cav, 5.0, 300.0)
+    assert np.allclose(h, cav.edge_len_km[seam])
+
+    rng = np.random.default_rng(1)
+    lo, hi = cav.ring_xy.min(axis=0), cav.ring_xy.max(axis=0)
+    pts = rng.uniform(lo, hi, size=(20000, 2))
+    h_new, d = seam_hfun_at(pts, cav, 5.0, 300.0)
+    h_edge, _ = seam_hfun_at(pts, per_edge, 5.0, 300.0)
+    segs = shapely.linestrings(cav.ring_xy[cav.ring_edges[seam]])
+    _, nearest = shapely.STRtree(segs).query_nearest(shapely.points(pts), all_matches=False)
+    near = d < SEAM_FLOOR[0] * cav.edge_len_km[seam][nearest]  # per point: its nearest seam edge
+    assert near.any() and (h_new[near] >= h_edge[near] - 1e-9).all()
+
+    auto, _ = seam_hfun_at(pts, cav, 5.0, None)
+    auto_edge, _ = seam_hfun_at(pts, per_edge, 5.0, None)
+    assert np.array_equal(auto, auto_edge)
+
+
+def test_no_coarse_band_where_the_seam_is_already_fine():
+    """A seam running through an already fine area: the transition next to
+    that part must not start coarser than the seam there (averaging along
+    the seam would pull it towards the coarse rest of the seam)."""
+    cav = extract_cavity(partly_fine_mesh(), FINE_SQUARE)
+    x0, y0 = stereo_xy(28.0, 20.0, cav.lon0, cav.lat0)      # on the fine seam part
+    cx, cy = shapely.Polygon(cav.polygon_xy).centroid.coords[0]
+    u = np.array([cx - x0, cy - y0]) / np.hypot(cx - x0, cy - y0)
+    d = np.arange(0.0, 161.0, 2.0)
+    line = np.array([x0, y0]) + d[:, None] * u            # straight inwards
+    h, _ = seam_hfun_at(line, cav, 5.0, 300.0)
+    fine_seam = float(np.median(seam_hfun_at(line[:3], cav, 5.0, 300.0)[0]))
+    assert fine_seam < 8.0                                   # the seam there is fine
+    assert h[d >= 20].max() <= 1.1 * fine_seam               # no coarser band inside it
