@@ -109,3 +109,11 @@ export function unwrapRing(vertices: LonLat[]): LonLat[] {
   }
   return out;
 }
+
+/** Vertices of a closed GeoJSON (lon, lat) ring for the polygon editor:
+ * the repeated closing vertex is dropped and longitudes are wrapped. */
+export function ringToVertices(ring: number[][]): LonLat[] {
+  const n = ring.length;
+  const closed = n > 1 && ring[0][0] === ring[n - 1][0] && ring[0][1] === ring[n - 1][1];
+  return (closed ? ring.slice(0, -1) : ring).map(([lon, lat]) => ({ lon: wrapLon(lon), lat }));
+}

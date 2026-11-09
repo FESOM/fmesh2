@@ -149,10 +149,24 @@ def _run_refine(args: dict, queue) -> None:
         stage("write")
         write_fesom(res.mesh, out_dir)
         write_mapping_csv(out_dir / "mapping.csv", res.mapping)
+        from fmesh2.io.refine_region import REGION_FILENAME, write_refine_region
+
+        region_file = write_refine_region(
+            out_dir / REGION_FILENAME,
+            args["polygon"],
+            {
+                "target_km": args["target_km"],
+                "transition_km": args.get("transition_km"),
+                "topo": args.get("topo"),
+                "minimum_depth": args.get("minimum_depth", 5.0),
+                "source_mesh": str(Path(args["mesh_dir"]).resolve()),
+            },
+        )
         queue.put(
             {
                 "type": "done",
                 "out_dir": str(out_dir),
+                "region_file": str(region_file),
                 "n_nodes": res.mesh.n_nodes,
                 "n_tri": res.mesh.n_tri,
                 "report": rep,

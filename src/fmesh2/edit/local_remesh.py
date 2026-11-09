@@ -15,6 +15,12 @@ Task 20 gate parameters (`docs/notes/cavity-spike.md`):
   length (narrower bands make jigsaw split the longest frozen edges) —
   SEAM segments only: coast segments border land, nothing stitches to
   them, so jigsaw may subdivide the coast polyline to meet the target.
+  With an explicit transition width the ramp is gentle and the headroom
+  is `WIDE_HEADROOM` (1.0) instead, so no ring of coarser elements is
+  left along the seam.
+  Further than a few seam edges into the cavity, an explicit transition
+  is laid out from the drawn polygon with a seam length smoothed along it
+  (`_smooth_transition`): no rays where the nearest seam edge changes.
 
 Reproducibility follows the M2 contract: the raw jigsaw cavity is cached
 (npz keyed by the exact inputs) and everything around it is pure numpy, so
@@ -45,7 +51,13 @@ from fmesh2.generate.postprocess import _neighbor_and_valence
 from .cavity import Cavity
 
 RING_HEADROOM = 1.2   # hfun at the ring = headroom x local seam-edge length
+WIDE_HEADROOM = 1.0   # ... when an explicit transition_km makes the ramp gentle
 BAND_FACTOR = 3.0     # per-segment transition band = factor x edge length
+# explicit transition (transition_km given), away from the seam:
+SMOOTH_SIGMA_FACTOR = 0.8  # along-polygon smoothing of seam lengths, sigma = factor x transition_km
+SMOOTH_MIN_SIGMAS = 1.0    # before smoothing: smallest seam length within +-this many sigma
+SEAM_NEAR = (1.0, 2.0)     # per-edge ramp up to 1x, smooth ramp from 2x the nearest edge length
+SEAM_FLOOR = (3.0, 4.0)    # never below the per-edge ramp up to 3x, fading out by 4x edge lengths
 SEAM_MATCH_TOL_KM = 1e-6  # ring vertices must reappear this close (measured: 0.0)
 MAX_HFUN_GRID = 4096  # per-axis cap on the local hfun grid
 
@@ -65,11 +77,29 @@ class RemeshResult:
 
 # --------------------------------------------------------------------- hfun
 
-def seam_hfun_at(points_xy, cavity: Cavity, target, transition_km: float | None = None):
+def seam_hfun_at(
+    points_xy,
+    cavity: Cavity,
+    target,
+    transition_km: float | None = None,
+    headroom: float | None = None,
+):
     """The seam-protecting ramp evaluated at plane points (km).
 
     `target` is a scalar or a per-point array. The band is per SEAM segment:
-    `max(BAND_FACTOR * segment_length, transition_km)`.
+    `max(BAND_FACTOR * segment_length, transition_km)`. The ramp starts at
+    `headroom` x the nearest seam segment's length; by default
+    `seam_headroom(transition_km)`.
+
+    With an explicit `transition_km` and the drawn polygon known, this
+    per-edge ramp is used only next to the seam (up to `SEAM_NEAR[0]` edge
+    lengths, blended out by `SEAM_NEAR[1]`); further in the ramp follows
+    `_smooth_transition`, and within `SEAM_FLOOR[0]` edge lengths it never
+    drops below the per-edge ramp (that floor fades out by `SEAM_FLOOR[1]`).
+    Per-edge ramps differ from one seam
+    edge to the next and leave rays across a wide transition; next to the
+    seam, though, the sizing must follow the frozen edges or jigsaw splits
+    them.
 
     Only seam segments (shared with the outside mesh) are protected — those
     edges must survive jigsaw untouched for the stitch. Coast segments are
@@ -87,17 +117,100 @@ def seam_hfun_at(points_xy, cavity: Cavity, target, transition_km: float | None 
     seam = ~cavity.edge_is_coast
     if not seam.any():
         return target.copy(), np.full(len(points_xy), np.inf)
+    if headroom is None:
+        headroom = seam_headroom(transition_km)
     seam_len = cavity.edge_len_km[seam]
     segs = shapely.linestrings(cavity.ring_xy[cavity.ring_edges[seam]])
     pgeo = shapely.points(points_xy)
     inp, near = shapely.STRtree(segs).query_nearest(pgeo, all_matches=False)
     d = np.empty(len(points_xy))
-    hseam = np.empty(len(points_xy))
-    band = np.empty(len(points_xy))
+    own = np.empty(len(points_xy))
     d[inp] = shapely.distance(pgeo[inp], segs[near])
-    hseam[inp] = RING_HEADROOM * seam_len[near]
-    band[inp] = np.maximum(BAND_FACTOR * seam_len[near], transition_km or 0.0)
-    return target + (hseam - target) * np.clip(1.0 - d / band, 0.0, 1.0), d
+    own[inp] = seam_len[near]
+    band = np.maximum(BAND_FACTOR * own, transition_km or 0.0)
+    h = target + (headroom * own - target) * np.clip(1.0 - d / band, 0.0, 1.0)
+    if transition_km is None or cavity.polygon_xy is None:
+        return h, d
+
+    w_edge = np.clip((SEAM_NEAR[1] - d / own) / (SEAM_NEAR[1] - SEAM_NEAR[0]), 0.0, 1.0)
+    # beyond every band both ramps equal the target: evaluate the smooth one
+    # only where it can differ (the polygon lies within ~an edge of the seam)
+    reach = max(float(band.max()), SEAM_FLOOR[1] * float(seam_len.max())) + 2.0 * float(
+        seam_len.max()
+    )
+    far = (w_edge < 1.0) & (d < reach)
+    if far.any():
+        h_smooth = _smooth_transition(
+            points_xy[far], cavity, target[far], transition_km, headroom
+        )
+        mixed = w_edge[far] * h[far] + (1.0 - w_edge[far]) * h_smooth
+        full, end = SEAM_FLOOR
+        w_floor = np.clip((end - d[far] / own[far]) / (end - full), 0.0, 1.0)
+        h[far] = mixed + w_floor * np.maximum(h[far] - mixed, 0.0)
+    return h, d
+
+
+def _smooth_transition(points_xy, cavity: Cavity, target, transition_km, headroom):
+    """Transition ramp laid out from the drawn polygon (km).
+
+    Distance = distance to the polygon (inside; 0 outside), start value =
+    `headroom` x the seam-edge length along the polygon, first replaced by
+    the smallest one within +-`SMOOTH_MIN_SIGMAS` sigma, then Gaussian-
+    smoothed with sigma = max(`SMOOTH_SIGMA_FACTOR` x transition_km, 3 x
+    the median seam edge). Both vary smoothly, so the ramp has no jumps;
+    taking the smallest length first keeps the start from being coarser
+    than the seam where the seam runs through an already fine area.
+    """
+    poly = shapely.Polygon(cavity.polygon_xy)
+    ext = poly.exterior
+    seam = ~cavity.edge_is_coast
+    edges = cavity.ring_edges[seam]
+    length = cavity.edge_len_km[seam]
+    mid = 0.5 * (cavity.ring_xy[edges[:, 0]] + cavity.ring_xy[edges[:, 1]])
+    from scipy.ndimage import gaussian_filter1d, minimum_filter1d
+
+    perim = ext.length
+    s_mid = ext.project(shapely.points(mid))
+    grid = np.linspace(0.0, perim, 4096, endpoint=False)
+    step = perim / grid.size
+    # seam length along the polygon: the edge whose midpoint is nearest in arc
+    order = np.argsort(s_mid)
+    s_sorted, l_sorted = s_mid[order], length[order]
+    ext_s = np.concatenate([s_sorted - perim, s_sorted, s_sorted + perim])
+    ext_l = np.tile(l_sorted, 3)
+    j = np.clip(np.searchsorted(ext_s, grid), 1, ext_s.size - 1)
+    pick = np.where(grid - ext_s[j - 1] <= ext_s[j] - grid, j - 1, j)
+    along = ext_l[pick]
+    sigma = max(SMOOTH_SIGMA_FACTOR * transition_km, 3.0 * float(np.median(length)))
+    window = min(2 * int(np.ceil(SMOOTH_MIN_SIGMAS * sigma / step)) + 1, grid.size)
+    smoothed = gaussian_filter1d(
+        minimum_filter1d(along, size=window, mode="wrap"), sigma / step, mode="wrap"
+    )
+
+    # distance to and position along the polygon from its nearest sample
+    # (spacing <= 1 km: error <= 0.5 km, negligible against the transition)
+    spacing = min(1.0, transition_km / 500.0)
+    dense = np.asarray(shapely.segmentize(ext, spacing).coords)[:-1]
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(dense, axis=0).T))])
+    dist, idx = cKDTree(dense).query(points_xy, workers=-1)
+    inside = shapely.contains_xy(poly, points_xy[:, 0], points_xy[:, 1])
+    d_poly = np.where(inside, dist, 0.0)
+    start = np.interp(arc[idx], grid, smoothed, period=perim)
+    band = np.maximum(BAND_FACTOR * start, transition_km)
+    return target + (headroom * start - target) * np.clip(1.0 - d_poly / band, 0.0, 1.0)
+
+
+def seam_headroom(transition_km: float | None) -> float:
+    """Headroom of the seam ramp.
+
+    `RING_HEADROOM` (1.2) for the automatic band of `BAND_FACTOR` seam
+    edges: that ramp is steep, and without headroom the sizing just inside
+    the seam drops below the frozen edge length and jigsaw splits seam
+    edges. `WIDE_HEADROOM` (1.0) with an explicit `transition_km`: the ramp
+    is gentle, and 1.2 would only leave a ring of ~5% coarser elements
+    along the seam.
+    """
+    return RING_HEADROOM if transition_km is None else WIDE_HEADROOM
 
 
 def build_local_hfun(
