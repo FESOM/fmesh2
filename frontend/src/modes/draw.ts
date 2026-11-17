@@ -90,6 +90,15 @@ export class DrawMode {
     return this.active;
   }
 
+  /** Show a given polygon as if it had been drawn: draw mode on, handles
+   * draggable, Enter (or a click on the first vertex) finishes. */
+  load(verts: LonLat[]): void {
+    if (!this.active) this.toggle();
+    this.verts = verts.map((v) => ({ lon: v.lon, lat: v.lat }));
+    this.rebuild();
+    this.notify();
+  }
+
   private notify(): void {
     this.ctx.onState?.(this.active, this.verts.length);
   }

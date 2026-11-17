@@ -1,6 +1,6 @@
 import type * as THREE from 'three';
-import { getJob, getMeshMeta, refineMesh, type JobSnapshot } from '../api';
-import { unwrapRing, type LonLat } from '../geo';
+import { getJob, getMeshMeta, getRegion, refineMesh, type JobSnapshot } from '../api';
+import { ringToVertices, unwrapRing, type LonLat } from '../geo';
 import type { MeshMeta } from '../types';
 import { DrawMode } from './draw';
 
@@ -33,6 +33,9 @@ export class RefineMode {
   private readonly targetInput: HTMLInputElement;
   private readonly transInput: HTMLInputElement;
   private readonly topoInput: HTMLInputElement;
+  private readonly regionInput: HTMLInputElement;
+  /** Minimum depth from a loaded region file (the panel has no field for it). */
+  private minimumDepth: number | null = null;
   private polling: number | undefined;
   private pollBusy = false; // interval ticks can overlap their async work
   private settled = false;
@@ -51,6 +54,12 @@ export class RefineMode {
         <label>transition km <input id="refTrans" type="number" step="any" placeholder="auto"></label>
         <label style="grid-column:1 / -1">topo .nc — optional, re-cuts the coastline
           <input id="refTopo" type="text" placeholder="/path/to/RTopo.nc"></label>
+        <label style="grid-column:1 / -1">region file — optional, instead of drawing
+          (.geojson with one polygon, e.g. a saved region.geojson)
+          <span style="display:flex;gap:4px">
+            <input id="refRegion" type="text" placeholder="/path/to/region.geojson" style="flex:1">
+            <button id="bRefineLoad">load</button>
+          </span></label>
       </div>
       <div id="refStatus" class="dim">draw a polygon on the mesh to refine it</div>
       <button id="refCancel" style="display:none">cancel job</button>
@@ -65,6 +74,8 @@ export class RefineMode {
     this.targetInput = panel.querySelector('#refTarget')!;
     this.transInput = panel.querySelector('#refTrans')!;
     this.topoInput = panel.querySelector('#refTopo')!;
+    this.regionInput = panel.querySelector('#refRegion')!;
+    panel.querySelector('#bRefineLoad')!.addEventListener('click', () => void this.loadRegion());
     this.topoInput.value = localStorage.getItem('fmesh2.refine.topo') ?? '';
     this.topoInput.addEventListener('change', () => {
       localStorage.setItem('fmesh2.refine.topo', this.topoInput.value.trim());
@@ -98,7 +109,46 @@ export class RefineMode {
   }
 
   toggle(): void {
+    this.minimumDepth = null; // a hand-drawn polygon uses the server default
     this.draw.toggle();
+  }
+
+  /** Read a region file on the server, show its polygon as the refine
+   * polygon and take over the refinement settings stored in it. */
+  private async loadRegion(): Promise<void> {
+    const path = this.regionInput.value.trim();
+    if (!path) {
+      this.status.textContent = 'enter the path of a region .geojson file first';
+      return;
+    }
+    let region: Awaited<ReturnType<typeof getRegion>>;
+    try {
+      region = await getRegion(path);
+    } catch (err) {
+      this.status.textContent = String(err);
+      return;
+    }
+    const s = region.settings;
+    const taken: string[] = [];
+    if (s.target_km != null) {
+      this.targetInput.value = String(s.target_km);
+      taken.push(`target ${s.target_km} km`);
+    }
+    if ('transition_km' in s) {
+      this.transInput.value = s.transition_km != null ? String(s.transition_km) : '';
+      taken.push(`transition ${s.transition_km != null ? `${s.transition_km} km` : 'auto'}`);
+    }
+    if ('topo' in s) {
+      this.topoInput.value = s.topo ?? '';
+      taken.push(s.topo ? 'topo' : 'no topo');
+    }
+    this.minimumDepth = s.minimum_depth ?? null;
+    if (this.minimumDepth != null) taken.push(`minimum depth ${this.minimumDepth} m`);
+    // release focus from the load button: Enter must reach the polygon
+    (document.activeElement as HTMLElement | null)?.blur();
+    this.draw.load(ringToVertices(region.ring));
+    this.status.textContent =
+      'region loaded' + (taken.length ? ` (${taken.join(', ')})` : '') + ' · Enter to refine';
   }
 
   /** Render the A/B readout; called by the scene whenever slots change. */
@@ -140,6 +190,7 @@ export class RefineMode {
         target_km: target,
         transition_km: Number.isFinite(trans) && trans > 0 ? trans : null,
         topo: this.topoInput.value.trim() || null,
+        ...(this.minimumDepth != null ? { minimum_depth: this.minimumDepth } : {}),
       }));
     } catch (err) {
       this.status.textContent = String(err);
@@ -199,6 +250,9 @@ export class RefineMode {
         : '') +
       (rep && !rep.watertight_seam ? ' <span class="warn">⚠ seam not watertight</span>' : '') +
       ` · <a href="/api/mesh/${snap.result.mesh_id}/mapping" download>mapping.csv</a>` +
+      (snap.result.region_file
+        ? `<div class="dim">region saved: ${snap.result.region_file}</div>`
+        : '') +
       (rep && rep.target_reached === false
         ? `<div class="warn">⚠ target ${rep.target_km} km is not reachable here: the ` +
           `frozen-seam transition only gets down to ~${rep.reachable_min_km.toFixed(0)} km ` +

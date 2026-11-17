@@ -6,6 +6,7 @@ import {
   lonLatToSphere,
   planeToLonLat,
   polygonGeoJSON,
+  ringToVertices,
   shouldClosePolygon,
   sphereToLonLat,
   unwrapRing,
@@ -106,5 +107,25 @@ describe('ring export', () => {
       { lon: 170, lat: 0 }, // crosses westward
     ]);
     expect(west.map((v) => v.lon)).toEqual([-170, -190]);
+  });
+});
+
+describe('ringToVertices', () => {
+  it('drops the closing vertex and wraps longitudes', () => {
+    const verts = ringToVertices([
+      [170, 0],
+      [190, 0],
+      [190, 10],
+      [170, 0],
+    ]);
+    expect(verts).toEqual([
+      { lon: 170, lat: 0 },
+      { lon: -170, lat: 0 },
+      { lon: -170, lat: 10 },
+    ]);
+  });
+
+  it('keeps an open ring as is', () => {
+    expect(ringToVertices([[1, 2], [3, 4], [5, 6]])).toHaveLength(3);
   });
 });
