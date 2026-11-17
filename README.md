@@ -102,7 +102,10 @@ refines exactly the same area. Files with two rings (fmesh inner + outer)
 are rejected — set the transition km instead. With a transition km the
 seam keeps the existing resolution exactly; without one, the automatic
 band is narrow and the seam sizing keeps a 1.2x headroom so jigsaw does
-not split seam edges.
+not split seam edges. A transition km is laid out from the drawn polygon
+with the seam spacing smoothed along it, so it has no rays; only within
+about three seam edges of the seam does the sizing follow the individual
+frozen edges, which keeps jigsaw from splitting them.
 
 **Deleting / adding nodes by hand** lives in edit mode (`[E]`): select and
 press `⌫` to delete (works for coastal nodes too — the coastline locally

@@ -41,7 +41,9 @@ class Cavity:
     `loop_starts` are offsets delimiting each loop (`n_loops + 1` entries).
     `ring_edges` are (r, 2) indices INTO `ring_nodes`, one edge per ring node
     (each loop is closed). `ring_xy` are stereographic plane coordinates (km)
-    centered at (`lon0`, `lat0`).
+    centered at (`lon0`, `lat0`). `polygon_xy` is the (densified, closed)
+    polygon that selected the cavity, in the same plane — None for a
+    cavity selected by an element mask.
     """
 
     elem_mask: np.ndarray
@@ -53,6 +55,7 @@ class Cavity:
     ring_edges: np.ndarray
     edge_len_km: np.ndarray
     edge_is_coast: np.ndarray
+    polygon_xy: np.ndarray | None = None
 
     @property
     def n_elems(self) -> int:
@@ -233,8 +236,10 @@ def extract_cavity(
         )
     ring_edges = np.vstack(edges_local).astype(np.int64)
 
+    polygon_xy = None
     if ring_lonlat is not None:
-        _, lon0, lat0 = _polygon_plane(ring_lonlat)
+        poly, lon0, lat0 = _polygon_plane(ring_lonlat)
+        polygon_xy = np.asarray(poly.exterior.coords, dtype=np.float64)
     else:
         lon0, lat0 = ring_center(mesh.lon[ring_nodes], mesh.lat[ring_nodes])
     x, y = stereo_xy(mesh.lon[ring_nodes], mesh.lat[ring_nodes], lon0, lat0)
@@ -260,4 +265,5 @@ def extract_cavity(
         ring_edges=ring_edges,
         edge_len_km=edge_len,
         edge_is_coast=edge_is_coast,
+        polygon_xy=polygon_xy,
     )
