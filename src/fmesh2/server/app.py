@@ -450,6 +450,20 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     # ---------------------------------------------------- local refinement
 
+    @app.get("/api/region")
+    def region_file(path: str):
+        """Polygon + refinement settings of a single-ring region GeoJSON."""
+        from fmesh2.io.refine_region import RegionFileError, read_refine_region
+
+        file = Path(path).expanduser()
+        if not file.is_file():
+            raise HTTPException(status_code=400, detail=f"region file not found: {path}")
+        try:
+            ring, settings = read_refine_region(file)
+        except RegionFileError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"path": str(file), "ring": ring.tolist(), "settings": settings}
+
     @app.post("/api/mesh/{mesh_id}/refine")
     def refine_mesh(mesh_id: str, req: RefineRequest):
         entry = _entry(mesh_id)
